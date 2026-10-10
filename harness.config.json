@@ -1,0 +1,35 @@
+{
+  "selection": {
+    "source": "https://artificialanalysis.ai/models",
+    "selected_at": "2026-10-10",
+    "rationale": "worker Sonnet 5.5 max(56, 141 tok/s, $5.46/task: 상위권 중 최고속), claude reviewer Opus 5.5 max(58 최상위, worker와 다른 모델), codex reviewer GPT-6 Astra max(53 OpenAI 최상위, codex models_cache에 gpt-6-astra 확인)"
+  },
+  "roles": {
+    "worker": {
+      "cli": "claude",
+      "model": "claude-sonnet-5-5",
+      "effort": "max"
+    },
+    "reviewers": [
+      {
+        "name": "claude",
+        "cli": "claude",
+        "model": "claude-opus-5-5",
+        "effort": "max"
+      },
+      {
+        "name": "codex",
+        "cli": "codex",
+        "model": "gpt-6-astra",
+        "effort": "max"
+      }
+    ]
+  },
+  "parallel": {
+    "max_worktrees": 3
+  },
+  "timeouts_sec": {
+    "step": 3600,
+    "review": 1800
+  }
+}

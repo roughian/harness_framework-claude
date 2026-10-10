@@ -6,7 +6,12 @@
 
 ### A. 탐색
 
-`/docs/` 하위 문서(PRD, ARCHITECTURE, ADR 등)를 읽고 프로젝트의 기획·아키텍처·설계 의도를 파악한다. 필요시 Explore 에이전트를 병렬로 사용한다.
+ARCHITECTURE·ADR·LESSONS는 CLAUDE.md import로 이미 로드되어 있다. 추가로 읽을 것:
+
+1. `docs/PROGRESS.md`와 `phases/index.json`을 먼저 읽는다. 이미 completed인 기능은 다시 설계하지 않는다. blocked나 error인 phase가 있으면 그것부터 사용자에게 알린다.
+2. `docs/PRD.md`를 읽고 기획 의도를 파악한다.
+
+코드베이스를 넓게 봐야 하면 Explore 에이전트를 병렬로 사용한다(읽기 전용이라 충돌이 없다).
 
 ### B. 논의
 
@@ -25,6 +30,7 @@
 5. **AC는 실행 가능한 커맨드** — "~가 동작해야 한다" 같은 추상적 서술이 아닌 `npm run build && npm test` 같은 실제 실행 가능한 검증 커맨드를 포함한다.
 6. **주의사항은 구체적으로** — "조심해라" 대신 "X를 하지 마라. 이유: Y" 형식으로 적는다.
 7. **네이밍** — step name은 kebab-case slug로, 해당 step의 핵심 모듈/작업을 한두 단어로 표현한다 (예: `project-setup`, `api-layer`, `auth-flow`).
+8. **LESSONS 반영** — `docs/LESSONS.md` 규칙 중 이 step에 해당하는 것을 금지사항에 옮겨 적는다.
 
 ### D. 파일 생성
 
@@ -70,6 +76,7 @@
 - `steps[].step`: 0부터 시작하는 순번.
 - `steps[].name`: kebab-case slug.
 - `steps[].status`: 초기값은 모두 `"pending"`.
+- `review`: `{risk_score, risk_level, blocking, rounds}`. 리뷰 게이트가 끝나면 execute.py가 기록한다. 생성 시 넣지 않는다.
 
 상태 전이와 자동 기록 필드:
 
@@ -90,11 +97,10 @@
 
 ## 읽어야 할 파일
 
-먼저 아래 파일들을 읽고 프로젝트의 아키텍처와 설계 의도를 파악하라:
+먼저 아래 파일들을 읽어라. ARCHITECTURE·ADR·LESSONS는 CLAUDE.md로 이미 로드되어 있으니 다시 적지 않는다.
 
-- `/docs/ARCHITECTURE.md`
-- `/docs/ADR.md`
 - {이전 step에서 생성/수정된 파일 경로}
+- {UI step이면 `/docs/UI_GUIDE.md`}
 
 이전 step에서 만들어진 코드를 꼼꼼히 읽고, 설계 의도를 이해한 뒤 작업하라.
 
@@ -131,21 +137,62 @@ npm test        # 테스트 통과
 
 ### E. 실행
 
+실행 전에 F절의 "모델 선택"을 확인한다(선택이 없거나 7일이 지났으면 먼저 고른다).
+
 ```bash
-python3 scripts/execute.py {task-name}        # 순차 실행
-python3 scripts/execute.py {task-name} --push  # 실행 후 push
+python3 scripts/execute.py {task-name}              # 순차 실행 + 교차 리뷰 게이트
+python3 scripts/execute.py {task-name} --push        # 실행 후 push (risk high 이상이면 생략)
+python3 scripts/execute.py {task-name} --no-review   # 리뷰 게이트 생략
 ```
 
 execute.py가 자동으로 처리하는 것:
 
-- `feat-{task-name}` 브랜치 생성/checkout
-- 가드레일 주입 — CLAUDE.md + docs/*.md 내용을 매 step 프롬프트에 포함
-- 컨텍스트 누적 — 완료된 step의 summary를 다음 step 프롬프트에 전달
-- 자가 교정 — 실패 시 최대 3회 재시도하며, 이전 에러 메시지를 프롬프트에 피드백
-- 2단계 커밋 — 코드 변경(`feat`)과 메타데이터(`chore`)를 분리 커밋
-- 타임스탬프 — started_at, completed_at, failed_at, blocked_at 자동 기록
+- `feat-{task-name}` 브랜치 생성/checkout. 실행 직전 브랜치를 리뷰 base로 기억한다.
+- 모델 — step은 `harness.config.json`의 `worker` 선택(model·effort·timeout)으로 실행한다. 헤더에 모델과 선택 일자를 보여 주고, 오래됐으면 경고한다.
+- 컨텍스트 — 규칙 문서는 CLAUDE.md import로 claude가 직접 로드한다. 프롬프트에는 이전 step summary와 작업 규칙만 넣는다.
+- 자가 교정 — 실패나 타임아웃 시 최대 3회 재시도하며, 이전 에러를 프롬프트에 피드백한다.
+- 2단계 커밋 — 코드 변경(`feat`)과 메타데이터(`chore`)를 분리 커밋한다.
+- **교차 리뷰 게이트** — 모든 step이 끝나면 `scripts/review.py`로 Claude와 Codex가 병렬 리뷰한다(herdr pane). 결과는 `phases/{task-name}/review.json`에 남는다.
+  - P0/P1이 있으면 worker가 1회 수정(`fix(...)` 커밋)하고 재리뷰한다.
+  - 그래도 남으면 phase를 blocked로 두고 종료한다(exit 2).
+- **진행 기록** — completed, blocked, error로 끝날 때마다 `docs/PROGRESS.md`에 결과를 append하고 커밋한다.
 
 에러 복구:
 
-- **error 발생 시**: `phases/{task-name}/index.json`에서 해당 step의 `status`를 `"pending"`으로 바꾸고 `error_message`를 삭제한 뒤 재실행한다.
-- **blocked 발생 시**: `blocked_reason`에 적힌 사유를 해결한 뒤, `status`를 `"pending"`으로 바꾸고 `blocked_reason`을 삭제한 뒤 재실행한다.
+- **step error**: `phases/{task-name}/index.json`에서 해당 step의 `status`를 `"pending"`으로 바꾸고 `error_message`를 삭제한 뒤 재실행한다.
+- **step blocked**: `blocked_reason`의 사유를 해결한 뒤, `status`를 `"pending"`으로 바꾸고 `blocked_reason`을 삭제한 뒤 재실행한다.
+- **리뷰 blocked** (task 레벨 `blocked_reason`이 `review:`로 시작): `review.json`의 P0/P1을 직접 고치거나 `/review`로 확인한 뒤 재실행한다. 모든 step이 completed이므로 리뷰부터 다시 시작한다.
+
+### F. 오케스트레이션과 병렬 작업
+
+**오케스트레이터는 사용자가 처음 명령을 내린 이 세션이다.** harness는 오케스트레이터 모델을 정하지 않는다.
+worker·reviewer 모델도 고정하지 않는다. 오케스트레이터가 실행할 때 고른다.
+
+모델 선택:
+
+1. `harness.config.json`의 `selection.selected_at`이 비었거나 7일이 지났으면, https://artificialanalysis.ai/models 를 WebFetch로 확인한다.
+2. 아래 기준으로 고른다.
+
+   | 역할 | 후보 | 기준 |
+   |---|---|---|
+   | worker | `claude` CLI로 돌릴 수 있는 Anthropic 모델 | Intelligence Index 상위권 중 출력 속도·비용이 좋은 것. 순차 step이 많기 때문 |
+   | reviewer `claude` | Anthropic 모델 | Index 최상위. **worker와 다른 모델**로 고른다. 작성자의 약점을 보완하기 위해서다 |
+   | reviewer `codex` | `codex` CLI로 돌릴 수 있는 OpenAI 모델 | Index 최상위. model id가 불확실하면 비워서 codex 기본값을 쓴다 |
+   | 세션 안 `implementer`/`reviewer` 에이전트 | Agent tool의 `model` 인자 | 위와 같은 기준으로 부를 때마다 지정한다(frontmatter에는 모델이 없다) |
+
+3. `roles.*.model`, `selection.selected_at`(YYYY-MM-DD), `selection.rationale`(점수·속도·비용 한 줄)을 갱신하고, 고른 결과를 사용자에게 알린다.
+   - effort는 `max`를 유지한다.
+   - model이 빈 값이면 CLI 기본 모델을 쓴다.
+
+병렬화 판단 규칙:
+
+1. **읽기 전용 작업은 병렬이 기본이다.** 탐색(Explore 에이전트)과 리뷰(review.py)가 여기에 해당한다.
+2. **phase 안의 step은 직렬로 둔다.** step끼리는 서로의 산출물에 의존한다. 병렬로 돌리면 결과를 맞추는 비용이 이득보다 크다.
+3. **서로 독립적인 phase만 병렬로 돌린다.** 겹치는 파일이 없고 서로의 산출물이 필요 없어야 한다. 동시에 `parallel.max_worktrees`(기본 3)개까지만 돌린다. 리뷰가 따라갈 수 있어야 하기 때문이다.
+   ```bash
+   # 1) 시작 전에 docs/ARCHITECTURE.md의 "공유 컨벤션"을 확정하고 커밋한다.
+   # 2) phase마다 worktree를 만들어 실행한다(herdr가 worktree를 새 workspace로 연다):
+   herdr worktree create --branch feat-{task-name} --no-focus
+   # 생성된 pane에서: python3 scripts/execute.py {task-name}
+   ```
+4. **세션 안에서 작은 구현을 나눌 때**는 `implementer` 에이전트(worktree 격리)를 병렬로 부르고, 끝나면 `reviewer` 에이전트나 `/review`로 검증한다.

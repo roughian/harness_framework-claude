@@ -22,3 +22,9 @@ src/
 
 ## 상태 관리
 {상태 관리 방식 (예: 서버 상태는 Server Components, 클라이언트 상태는 useState/useReducer)}
+
+## 공유 컨벤션
+병렬 작업(여러 worktree·implementer 에이전트)을 시작하기 전에 오케스트레이터가 확정한다. 워커마다 다르게 판단할 여지를 없앤다.
+- 명명: {예: 파일 kebab-case, 컴포넌트 PascalCase, API 경로 /api/v1/<복수명사>}
+- 인터페이스: {예: 서비스 함수는 Result<T, AppError> 반환, 공용 타입은 types/에만}
+- 에러 형식: {예: { error: { code, message } }}

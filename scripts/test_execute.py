@@ -142,55 +142,17 @@ class TestJsonHelpers:
 
 
 # ---------------------------------------------------------------------------
-# _load_guardrails
+# 문서 주입 (CLAUDE.md @import로 대체됨)
 # ---------------------------------------------------------------------------
 
-class TestLoadGuardrails:
-    def test_loads_claude_md_and_docs(self, executor, tmp_project):
-        with patch.object(ex, "ROOT", tmp_project):
-            result = executor._load_guardrails()
-        assert "# Rules" in result
-        assert "rule one" in result
-        assert "# Architecture" in result
-        assert "# Guide" in result
+class TestPreambleDocs:
+    def test_docs_and_claude_md_not_injected(self, executor):
+        result = executor._build_preamble("")
+        assert "rule one" not in result
+        assert "# Architecture" not in result
 
-    def test_sections_separated_by_divider(self, executor, tmp_project):
-        with patch.object(ex, "ROOT", tmp_project):
-            result = executor._load_guardrails()
-        assert "---" in result
-
-    def test_docs_sorted_alphabetically(self, executor, tmp_project):
-        with patch.object(ex, "ROOT", tmp_project):
-            result = executor._load_guardrails()
-        arch_pos = result.index("arch")
-        guide_pos = result.index("guide")
-        assert arch_pos < guide_pos
-
-    def test_no_claude_md(self, executor, tmp_project):
-        (tmp_project / "CLAUDE.md").unlink()
-        with patch.object(ex, "ROOT", tmp_project):
-            result = executor._load_guardrails()
-        assert "CLAUDE.md" not in result
-        assert "Architecture" in result
-
-    def test_no_docs_dir(self, executor, tmp_project):
-        import shutil
-        shutil.rmtree(tmp_project / "docs")
-        with patch.object(ex, "ROOT", tmp_project):
-            result = executor._load_guardrails()
-        assert "Rules" in result
-        assert "Architecture" not in result
-
-    def test_empty_project(self, tmp_path):
-        with patch.object(ex, "ROOT", tmp_path):
-            # executor가 필요 없는 static-like 동작이므로 임시 인스턴스
-            phases_dir = tmp_path / "phases" / "dummy"
-            phases_dir.mkdir(parents=True)
-            idx = {"project": "T", "phase": "t", "steps": []}
-            (phases_dir / "index.json").write_text(json.dumps(idx))
-            inst = ex.StepExecutor.__new__(ex.StepExecutor)
-            result = inst._load_guardrails()
-        assert result == ""
+    def test_includes_lessons_rule(self, executor):
+        assert "docs/LESSONS.md" in executor._build_preamble("")
 
 
 # ---------------------------------------------------------------------------
@@ -233,42 +195,38 @@ class TestBuildStepContext:
 
 class TestBuildPreamble:
     def test_includes_project_name(self, executor):
-        result = executor._build_preamble("", "")
+        result = executor._build_preamble("")
         assert "TestProject" in result
-
-    def test_includes_guardrails(self, executor):
-        result = executor._build_preamble("GUARD_CONTENT", "")
-        assert "GUARD_CONTENT" in result
 
     def test_includes_step_context(self, executor):
         ctx = "## 이전 Step 산출물\n\n- Step 0: done"
-        result = executor._build_preamble("", ctx)
+        result = executor._build_preamble(ctx)
         assert "이전 Step 산출물" in result
 
     def test_includes_commit_example(self, executor):
-        result = executor._build_preamble("", "")
+        result = executor._build_preamble("")
         assert "feat(mvp):" in result
 
     def test_includes_rules(self, executor):
-        result = executor._build_preamble("", "")
+        result = executor._build_preamble("")
         assert "작업 규칙" in result
         assert "AC" in result
 
     def test_no_retry_section_by_default(self, executor):
-        result = executor._build_preamble("", "")
+        result = executor._build_preamble("")
         assert "이전 시도 실패" not in result
 
     def test_retry_section_with_prev_error(self, executor):
-        result = executor._build_preamble("", "", prev_error="타입 에러 발생")
+        result = executor._build_preamble("", prev_error="타입 에러 발생")
         assert "이전 시도 실패" in result
         assert "타입 에러 발생" in result
 
     def test_includes_max_retries(self, executor):
-        result = executor._build_preamble("", "")
+        result = executor._build_preamble("")
         assert str(ex.StepExecutor.MAX_RETRIES) in result
 
     def test_includes_index_path(self, executor):
-        result = executor._build_preamble("", "")
+        result = executor._build_preamble("")
         assert "/phases/0-mvp/index.json" in result
 
 
@@ -358,6 +316,15 @@ class TestCheckoutBranch:
             MagicMock(returncode=0, stdout="", stderr=""),
         ])
         executor._checkout_branch()
+
+    def test_records_base_branch(self, executor):
+        self._mock_git(executor, [
+            MagicMock(returncode=0, stdout="develop\n", stderr=""),
+            MagicMock(returncode=1, stdout="", stderr=""),
+            MagicMock(returncode=0, stdout="", stderr=""),
+        ])
+        executor._checkout_branch()
+        assert executor._base_branch == "develop"
 
     def test_checkout_fails_exits(self, executor):
         self._mock_git(executor, [
@@ -460,14 +427,38 @@ class TestInvokeClaude:
             executor._invoke_claude(step, "preamble")
         assert exc_info.value.code == 1
 
-    def test_timeout_is_1800(self, executor):
+    def test_timeout_from_config(self, executor):
         mock_result = MagicMock(returncode=0, stdout="{}", stderr="")
         step = {"step": 2, "name": "ui"}
 
         with patch("subprocess.run", return_value=mock_result) as mock_run:
             executor._invoke_claude(step, "preamble")
 
-        assert mock_run.call_args[1]["timeout"] == 1800
+        assert mock_run.call_args[1]["timeout"] == executor._config["timeouts_sec"]["step"]
+
+    def test_uses_worker_model_and_effort(self, executor):
+        mock_result = MagicMock(returncode=0, stdout="{}", stderr="")
+        worker = {"cli": "claude", "model": "picked-model", "effort": "max"}
+        executor._config["roles"]["worker"] = worker
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            executor._invoke_claude({"step": 2, "name": "ui"}, "preamble")
+
+        cmd = mock_run.call_args[0][0]
+        assert cmd[cmd.index("--model") + 1] == worker["model"]
+        assert cmd[cmd.index("--effort") + 1] == worker["effort"]
+
+    def test_empty_worker_model_uses_cli_default(self, executor):
+        executor._config["roles"]["worker"] = {"cli": "claude", "model": "", "effort": "max"}
+        with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="{}", stderr="")) as mock_run:
+            executor._invoke_claude({"step": 2, "name": "ui"}, "preamble")
+        assert "--model" not in mock_run.call_args[0][0]
+
+    def test_timeout_expired_is_recorded_not_raised(self, executor):
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("claude", 1)):
+            output = executor._invoke_claude({"step": 2, "name": "ui"}, "preamble")
+        assert output["exitCode"] == -1
+        assert "timeout" in output["stderr"]
 
 
 # ---------------------------------------------------------------------------
@@ -505,6 +496,12 @@ class TestMainCli:
                 with pytest.raises(SystemExit) as exc_info:
                     ex.main()
                 assert exc_info.value.code == 1
+
+    def test_no_review_flag(self):
+        with patch("sys.argv", ["execute.py", "0-mvp", "--no-review"]):
+            with patch.object(ex, "StepExecutor") as mock_cls:
+                ex.main()
+        assert mock_cls.call_args[1]["review_enabled"] is False
 
     def test_missing_index_exits(self, tmp_project):
         (tmp_project / "phases" / "empty").mkdir()
@@ -557,3 +554,174 @@ class TestCheckBlockers:
         with pytest.raises(SystemExit) as exc_info:
             inst._check_blockers()
         assert exc_info.value.code == 2
+
+
+# ---------------------------------------------------------------------------
+# 리뷰 게이트 / PROGRESS 기록 / push 정책
+# ---------------------------------------------------------------------------
+
+def _merged(blocking=0, level="low", score=10):
+    findings = [
+        {"title": "SQL injection", "body": "b", "priority": 0, "confidence": 0.9, "file": "src/a.ts",
+         "line_start": 3, "line_end": 4, "pre_existing": False, "found_by": ["claude"]}
+    ] * blocking
+    return {
+        "base": "main", "reviewers": ["claude", "codex"], "failed": {},
+        "verdict": "patch is incorrect" if blocking else "patch is correct",
+        "risk": {"score": score, "level": level, "axes": {}},
+        "blocking": blocking, "findings": findings, "summaries": {},
+    }
+
+
+@pytest.fixture
+def git_log(executor):
+    """_run_git 호출을 기록하고, 스테이징된 변경이 있는 것처럼 응답한다."""
+    calls = []
+
+    def fake_git(*args):
+        calls.append(args)
+        if args[:2] == ("diff", "--cached"):
+            return MagicMock(returncode=1, stdout="", stderr="")
+        return MagicMock(returncode=0, stdout="abc1234\n", stderr="")
+
+    executor._run_git = fake_git
+    return calls
+
+
+class TestReviewPhase:
+    def test_clean_review_records_and_skips_fix(self, executor, git_log):
+        executor._run_claude = MagicMock()
+        with patch.object(ex.review, "run_review", return_value=_merged()):
+            result = executor._review_phase()
+        assert result["blocking"] == 0
+        executor._run_claude.assert_not_called()
+        index = json.loads(executor._index_file.read_text())
+        assert index["review"] == {"risk_score": 10, "risk_level": "low", "blocking": 0, "rounds": 0}
+
+    def test_blocking_fixed_then_rereviewed(self, executor, git_log):
+        executor._run_claude = MagicMock()
+        with patch.object(ex.review, "run_review", side_effect=[_merged(blocking=1), _merged()]):
+            executor._review_phase()
+        prompt = executor._run_claude.call_args[0][0]
+        assert "SQL injection" in prompt
+        commits = [c for c in git_log if c[0] == "commit"]
+        assert any("fix(mvp)" in c[2] for c in commits)
+        assert json.loads(executor._index_file.read_text())["review"]["rounds"] == 1
+
+    def test_still_blocking_blocks_phase(self, executor, git_log, tmp_project):
+        executor._run_claude = MagicMock()
+        with patch.object(ex.review, "run_review", return_value=_merged(blocking=2)):
+            with pytest.raises(SystemExit) as exc_info:
+                executor._review_phase()
+        assert exc_info.value.code == 2
+        index = json.loads(executor._index_file.read_text())
+        assert "P0/P1" in index["blocked_reason"]
+        assert "blocked" in (tmp_project / "docs" / "PROGRESS.md").read_text()
+
+    def test_all_reviewers_failed_blocks_phase(self, executor, git_log):
+        with patch.object(ex.review, "run_review", side_effect=ex.review.ReviewError("x")):
+            with pytest.raises(SystemExit) as exc_info:
+                executor._review_phase()
+        assert exc_info.value.code == 2
+
+
+class TestProgress:
+    def test_completed_entry_lists_steps_and_commit_range(self, executor, git_log, tmp_project):
+        executor._record_progress("completed")
+        text = (tmp_project / "docs" / "PROGRESS.md").read_text()
+        assert "mvp — completed" in text
+        assert "- step 0 setup: 프로젝트 초기화 완료" in text
+        assert "main..abc1234" in text
+
+    def test_includes_review_risk(self, executor, git_log, tmp_project):
+        index = json.loads(executor._index_file.read_text())
+        index["review"] = {"risk_score": 12, "risk_level": "low", "blocking": 0, "rounds": 1}
+        executor._index_file.write_text(json.dumps(index))
+        executor._record_progress("completed")
+        assert "risk low 12" in (tmp_project / "docs" / "PROGRESS.md").read_text()
+
+    def test_appends_not_overwrites(self, executor, git_log, tmp_project):
+        executor._record_progress("blocked", "API key")
+        executor._record_progress("completed")
+        text = (tmp_project / "docs" / "PROGRESS.md").read_text()
+        assert text.count("\n## ") == 2
+        assert "blocked: API key" in text
+
+    def test_commits_only_progress_file(self, executor, git_log):
+        executor._record_progress("completed")
+        commit = next(c for c in git_log if c[0] == "commit")
+        assert commit[-2:] == ("--", "docs/PROGRESS.md")
+
+
+class TestFinalizePush:
+    def test_high_risk_skips_push(self, executor, git_log):
+        executor._auto_push = True
+        executor._finalize(_merged(level="high", score=40))
+        assert not any(c[0] == "push" for c in git_log)
+
+    def test_low_risk_pushes(self, executor, git_log):
+        executor._auto_push = True
+        executor._finalize(_merged())
+        assert any(c[0] == "push" for c in git_log)
+
+    def test_no_review_pushes(self, executor, git_log):
+        executor._auto_push = True
+        executor._finalize(None)
+        assert any(c[0] == "push" for c in git_log)
+
+
+class TestReviewBaseAndWorkDir:
+    def test_first_run_persists_base_branch(self, executor):
+        TestCheckoutBranch()._mock_git(executor, [
+            MagicMock(returncode=0, stdout="develop\n", stderr=""),
+            MagicMock(returncode=1, stdout="", stderr=""),
+            MagicMock(returncode=0, stdout="", stderr=""),
+        ])
+        executor._checkout_branch()
+        assert json.loads(executor._index_file.read_text())["base_branch"] == "develop"
+
+    def test_rerun_on_feature_branch_restores_base(self, executor):
+        index = json.loads(executor._index_file.read_text())
+        index["base_branch"] = "develop"
+        executor._index_file.write_text(json.dumps(index))
+        TestCheckoutBranch()._mock_git(executor, [MagicMock(returncode=0, stdout="feat-mvp\n", stderr="")])
+        executor._checkout_branch()
+        assert executor._base_branch == "develop"
+
+    def test_review_uses_phase_specific_work_dir(self, executor, git_log):
+        with patch.object(ex.review, "run_review", return_value=_merged()) as mock_review:
+            executor._review_phase()
+        work_dir = mock_review.call_args[1]["work_dir"]
+        assert work_dir.name == "0-mvp"
+
+
+class TestHeaderModelSelection:
+    def _config(self, executor, selected_at, worker_model=""):
+        executor._config = {
+            "selection": {"selected_at": selected_at},
+            "roles": {
+                "worker": {"cli": "claude", "model": worker_model, "effort": "max"},
+                "reviewers": [{"name": "codex", "cli": "codex", "model": "", "effort": "max"}],
+            },
+        }
+
+    def test_prints_models_and_cli_default(self, executor, capsys):
+        self._config(executor, "2026-10-10", worker_model="claude-sonnet-5-5")
+        with patch.object(ex, "_today", return_value=ex.date(2026, 10, 11)):
+            executor._print_header()
+        out = capsys.readouterr().out
+        assert "worker: claude-sonnet-5-5" in out
+        assert "codex: CLI 기본" in out
+        assert "2026-10-10" in out
+        assert "WARN" not in out
+
+    def test_warns_when_selection_stale(self, executor, capsys):
+        self._config(executor, "2026-10-01")
+        with patch.object(ex, "_today", return_value=ex.date(2026, 10, 10)):
+            executor._print_header()
+        assert "WARN" in capsys.readouterr().out
+
+    def test_warns_when_never_selected(self, executor, capsys):
+        self._config(executor, "")
+        executor._print_header()
+        assert "WARN" in capsys.readouterr().out
