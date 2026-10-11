@@ -187,20 +187,17 @@ class TestUseHerdr:
 class TestRunInHerdr:
     def test_starts_all_before_waiting_and_closes_own_panes(self):
         calls = []
-        split_ids = iter(["w1:p7", "w1:p8"])
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd[1:3])
-            out = ""
-            if cmd[1:3] == ["pane", "split"]:
-                out = json.dumps({"result": {"pane": {"pane_id": next(split_ids)}}})
-            return MagicMock(returncode=0, stdout=out, stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
 
-        with patch("subprocess.run", side_effect=fake_run):
+        with patch("subprocess.run", side_effect=fake_run), \
+                patch("herdr_layout.split_pane", side_effect=["w1:p7", "w1:p8"]):
             errors = rv.run_in_herdr({"claude": "cmd1", "codex": "cmd2"}, timeout_sec=10)
 
         actions = [c[1] for c in calls]
-        assert actions == ["split", "run", "split", "run", "wait-output", "wait-output", "close", "close"]
+        assert actions == ["run", "run", "wait-output", "wait-output", "close", "close"]
         assert errors == {}
 
     def test_done_marker_not_matched_by_command_echo(self):
@@ -214,7 +211,8 @@ class TestRunInHerdr:
             out = json.dumps({"result": {"pane": {"pane_id": "w1:p9"}}})
             return MagicMock(returncode=0, stdout=out, stderr="")
 
-        with patch("subprocess.run", side_effect=fake_run):
+        with patch("subprocess.run", side_effect=fake_run), \
+                patch("herdr_layout.split_pane", return_value="w1:p9"):
             rv.run_in_herdr({"claude": "cmd1"}, timeout_sec=10)
 
         command_text, marker = sent
@@ -227,7 +225,8 @@ class TestRunInHerdr:
             out = json.dumps({"result": {"pane": {"pane_id": "w1:p9"}}})
             return MagicMock(returncode=0, stdout=out, stderr="")
 
-        with patch("subprocess.run", side_effect=fake_run):
+        with patch("subprocess.run", side_effect=fake_run), \
+                patch("herdr_layout.split_pane", return_value="w1:p9"):
             errors = rv.run_in_herdr({"codex": "cmd"}, timeout_sec=10)
         assert "codex" in errors
 

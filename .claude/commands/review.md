@@ -4,7 +4,7 @@
    ```bash
    python3 scripts/review.py --base <base>
    ```
-   - herdr 안이면 리뷰어마다 오른쪽 pane이 열려 병렬로 돈다. 아니면 로컬에서 병렬로 실행된다.
+   - herdr 안이면 리뷰어마다 pane이 열려 병렬로 돈다(오케스트레이션은 왼쪽 위 1/4 유지, 나머지는 위아래로 분할). 아니면 로컬에서 병렬로 실행된다.
    - 리뷰어 구성과 모델은 `harness.config.json`의 `roles.reviewers`를 따른다.
    - 한 시간 가까이 걸릴 수 있으니 Bash timeout을 충분히 준다.
 2. `.review/latest.json`을 읽고 아래 표로 요약한다. 심각도 순으로 정렬한다.

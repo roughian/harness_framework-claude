@@ -168,6 +168,11 @@ execute.py가 자동으로 처리하는 것:
 **오케스트레이터는 사용자가 처음 명령을 내린 이 세션이다.** harness는 오케스트레이터 모델을 정하지 않는다.
 worker·reviewer 모델도 고정하지 않는다. 오케스트레이터가 실행할 때 고른다.
 
+herdr 화면 배치 (herdr 안일 때):
+- 작업을 시작하면 먼저 `python3 scripts/herdr_layout.py mark`로 이 세션 pane 이름을 "오케스트레이션"으로 바꾼다.
+- pane을 새로 열 때는 `herdr pane split`을 직접 쓰지 말고 `python3 scripts/herdr_layout.py split --cwd <경로>`를 쓴다(새 pane_id 출력).
+  - 오케스트레이션은 왼쪽 위 1/4을 유지하고, 나머지 pane은 남은 영역을 위아래로 나눈다. `review.py`도 이 규칙을 따른다.
+
 모델 선택:
 
 1. `harness.config.json`의 `selection.selected_at`이 비었거나 7일이 지났으면, https://artificialanalysis.ai/models 를 WebFetch로 확인한다.

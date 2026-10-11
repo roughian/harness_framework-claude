@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 import config as cfg
+import herdr_layout
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_FILE = ROOT / "scripts" / "review_schema.json"
@@ -122,10 +123,7 @@ def _herdr(*args) -> subprocess.CompletedProcess:
 
 
 def _start_in_pane(name: str, command: str) -> str:
-    split = _herdr("pane", "split", "--current", "--direction", "right", "--no-focus", "--cwd", str(ROOT))
-    if split.returncode != 0:
-        raise RuntimeError(f"pane split 실패: {split.stderr.strip()}")
-    pane = json.loads(split.stdout)["result"]["pane"]["pane_id"]
+    pane = herdr_layout.split_pane(ROOT)
     # 명령 텍스트 자체에는 "MARKER:name"이 나타나지 않게 printf로 조립한다(에코 오탐 방지).
     _herdr("pane", "run", pane, f"{command}; printf '%s:%s\\n' {DONE_MARKER} {name}")
     return pane
