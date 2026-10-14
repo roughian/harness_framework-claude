@@ -12,3 +12,6 @@ phases/**/step*-output.json
 .review/
 __pycache__/
 .pytest_cache/
+
+# tdd-guard 실행 데이터 (어느 폴더에서 테스트를 돌려도 생긴다)
+**/.claude/tdd-guard/

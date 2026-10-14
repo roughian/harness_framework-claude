@@ -31,5 +31,24 @@
   "timeouts_sec": {
     "step": 3600,
     "review": 1800
+  },
+  "github": {
+    "model": "",
+    "effort": "",
+    "reviewers": [],
+    "seniors": [],
+    "notify": []
+  },
+  "review": {
+    "single_reviewer_max_lines": 100,
+    "full_review_paths": [
+      "auth",
+      "crypto",
+      "security",
+      "migration",
+      ".claude/",
+      ".githooks/",
+      "scripts/hooks/"
+    ]
   }
 }

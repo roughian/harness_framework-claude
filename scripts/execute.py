@@ -63,7 +63,8 @@ class StepExecutor:
     """Phase 디렉토리 안의 step들을 순차 실행하는 하네스."""
 
     MAX_RETRIES = 3
-    MAX_REVIEW_FIX_ROUNDS = 1
+    # 첫 리뷰 뒤 '수정 → 검증 리뷰(수정분만)'를 최대 몇 번 돌지. 넘으면 blocked로 두고 사람이 판단한다.
+    MAX_REVIEW_FIX_ROUNDS = 2
     FEAT_MSG = "feat({phase}): step {num} — {name}"
     CHORE_MSG = "chore({phase}): step {num} output"
     FIX_MSG = "fix({phase}): address review findings"
@@ -125,7 +126,9 @@ class StepExecutor:
 
     def _run_git(self, *args) -> subprocess.CompletedProcess:
         cmd = ["git"] + list(args)
-        return subprocess.run(cmd, cwd=self._root, capture_output=True, text=True)
+        # git pre-push 리뷰를 건너뛴다. phase 끝의 리뷰 게이트가 같은 일을 한다.
+        env = {**os.environ, "HARNESS_SKIP_GIT_REVIEW": "1"}
+        return subprocess.run(cmd, cwd=self._root, capture_output=True, text=True, env=env)
 
     def _checkout_branch(self):
         branch = f"feat-{self._phase_name}"
@@ -415,11 +418,10 @@ class StepExecutor:
 
     # --- 리뷰 게이트 ---
 
-    def _run_review(self, out: Path) -> Optional[dict]:
-        print("\n  ▶ 교차 리뷰 실행 중 ...")
+    def _run_review(self, out: Path, previous: Optional[dict] = None) -> Optional[dict]:
+        print("\n  ▶ " + ("검증 리뷰(수정분만) 실행 중 ..." if previous else "리뷰 실행 중 ..."))
         try:
-            result = review.run_review(self._base_branch, out, config=self._config,
-                                       work_dir=Path(self._root) / ".review" / self._phase_dir_name)
+            result = review.run_review(self._base_branch, out, config=self._config, previous=previous)
         except review.ReviewError as err:
             print(f"  ✗ {err}")
             return None
@@ -444,15 +446,22 @@ class StepExecutor:
         print("  해결 후 다시 실행하면 리뷰부터 재개한다.")
         sys.exit(2)
 
+    def _unresolved_review(self, out: Path) -> Optional[dict]:
+        """blocked 뒤 재실행이면 지난 리뷰 결과. 전체를 다시 보지 않고 그 지적만 검증한다."""
+        if not out.exists():
+            return None
+        previous = self._read_json(out)
+        return previous if previous.get("blocking") and previous.get("head") else None
+
     def _review_phase(self) -> dict:
-        """P0/P1이 있으면 수정 세션 후 재리뷰한다. 남으면 phase를 blocked로 두고 종료한다."""
+        """P0/P1이 있으면 수정 세션 후 수정분만 검증 리뷰한다. 남으면 phase를 blocked로 두고 종료한다."""
         out = self._phase_dir / "review.json"
         rounds = 0
-        result = self._run_review(out)
+        result = self._run_review(out, previous=self._unresolved_review(out))
         while result and result["blocking"] and rounds < self.MAX_REVIEW_FIX_ROUNDS:
             rounds += 1
             self._fix_review_findings(result)
-            result = self._run_review(out)
+            result = self._run_review(out, previous=result)
         if result is None:
             self._block_phase("review: 모든 리뷰어 실패 — 리뷰어 설정을 확인하거나 --no-review로 실행")
         index = self._read_json(self._index_file)
@@ -505,6 +514,9 @@ class StepExecutor:
             if r.returncode == 0:
                 print(f"  ✓ {msg}")
         self._record_progress("completed")
+        if review_result and not review_result["blocking"]:
+            # 완료 표시·PROGRESS 커밋까지 리뷰 통과로 기록해 pre-push가 같은 범위를 다시 리뷰하지 않게 한다.
+            review.record_passed(self._run_git("rev-parse", "HEAD").stdout.strip())
 
         risk = (review_result or {}).get("risk", {}).get("level")
         if self._auto_push and risk in self.PUSH_BLOCKED_RISK_LEVELS:

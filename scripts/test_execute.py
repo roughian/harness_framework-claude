@@ -22,6 +22,12 @@ import execute as ex
 # Fixtures
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _isolated_review_cache(tmp_path, monkeypatch):
+    """리뷰 통과 기록은 임시 폴더에 쓴다."""
+    monkeypatch.setattr(ex.review, "PASSED_FILE", tmp_path / "passed")
+
+
 @pytest.fixture
 def tmp_project(tmp_path):
     """phases/, CLAUDE.md, docs/ 를 갖춘 임시 프로젝트 구조."""
@@ -283,6 +289,13 @@ class TestUpdateTopIndex:
 # ---------------------------------------------------------------------------
 # _checkout_branch (mocked)
 # ---------------------------------------------------------------------------
+
+class TestRunGitSkipsReviewHooks:
+    def test_git_calls_skip_git_review_hooks(self, executor):
+        with patch("subprocess.run", return_value=MagicMock(returncode=0)) as run:
+            executor._run_git("commit", "-m", "x")
+        assert run.call_args.kwargs["env"]["HARNESS_SKIP_GIT_REVIEW"] == "1"
+
 
 class TestCheckoutBranch:
     def _mock_git(self, executor, responses):
@@ -569,7 +582,7 @@ def _merged(blocking=0, level="low", score=10):
         "base": "main", "reviewers": ["claude", "codex"], "failed": {},
         "verdict": "patch is incorrect" if blocking else "patch is correct",
         "risk": {"score": score, "level": level, "axes": {}},
-        "blocking": blocking, "findings": findings, "summaries": {},
+        "blocking": blocking, "findings": findings, "summaries": {}, "head": "h" * 40,
     }
 
 
@@ -688,11 +701,35 @@ class TestReviewBaseAndWorkDir:
         executor._checkout_branch()
         assert executor._base_branch == "develop"
 
-    def test_review_uses_phase_specific_work_dir(self, executor, git_log):
+
+
+class TestVerifyReview:
+    def test_rereview_after_fix_is_verify_mode(self, executor, git_log):
+        executor._run_claude = MagicMock()
+        first = _merged(blocking=1)
+        with patch.object(ex.review, "run_review", side_effect=[first, _merged()]) as mock_review:
+            executor._review_phase()
+        assert mock_review.call_args_list[0].kwargs["previous"] is None
+        assert mock_review.call_args_list[1].kwargs["previous"] is first
+
+    def test_rerun_after_blocked_starts_with_verify(self, executor, git_log):
+        # blocked 뒤 재실행은 전체를 다시 보지 않고 지난 차단 지적만 검증한다.
+        previous = _merged(blocking=1)
+        (executor._phase_dir / "review.json").write_text(json.dumps(previous))
         with patch.object(ex.review, "run_review", return_value=_merged()) as mock_review:
             executor._review_phase()
-        work_dir = mock_review.call_args[1]["work_dir"]
-        assert work_dir.name == "0-mvp"
+        assert mock_review.call_args.kwargs["previous"] == previous
+
+    def test_stops_after_max_rounds(self, executor, git_log):
+        executor._run_claude = MagicMock()
+        with patch.object(ex.review, "run_review", return_value=_merged(blocking=1)) as mock_review:
+            with pytest.raises(SystemExit):
+                executor._review_phase()
+        assert mock_review.call_count == 1 + executor.MAX_REVIEW_FIX_ROUNDS
+
+    def test_finalize_records_head_as_passed(self, executor, git_log):
+        executor._finalize(_merged())
+        assert ex.review.is_passed("abc1234")
 
 
 class TestHeaderModelSelection:

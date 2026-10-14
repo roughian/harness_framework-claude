@@ -1,4 +1,4 @@
-"""review.py 테스트 — 프롬프트, 리뷰어 명령, herdr/로컬 병렬 실행, 결과 병합."""
+"""review.py 테스트 — 프롬프트, 리뷰어 선택, 병렬 실행, 결과 병합, 검증 리뷰, 상태·캐시."""
 
 import json
 import subprocess
@@ -12,10 +12,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 import review as rv
 
 
-def _finding(file="src/a.ts", start=10, end=12, priority=1, pre_existing=False, title="bug"):
+def _finding(file="src/a.ts", start=10, end=12, priority=1, pre_existing=False, title="bug",
+             confirmed=True, repro="npm test -- a"):
     return {
         "title": title, "body": "desc", "priority": priority, "confidence": 0.8,
         "file": file, "line_start": start, "line_end": end, "pre_existing": pre_existing,
+        "repro": repro, "confirmed": confirmed,
     }
 
 
@@ -30,6 +32,18 @@ def _result(findings=None, score=10, verdict="patch is correct"):
 
 CLAUDE_REVIEWER = {"name": "claude", "cli": "claude", "model": "claude-opus-5-5", "effort": "max"}
 CODEX_REVIEWER = {"name": "codex", "cli": "codex", "model": "", "effort": "max"}
+HEAD_SHA = "f" * 40
+
+
+@pytest.fixture(autouse=True)
+def _isolated(tmp_path, monkeypatch):
+    """상태·캐시 파일은 임시 폴더로, git 조회는 고정값으로."""
+    monkeypatch.setattr(rv, "REVIEW_DIR", tmp_path / "review-dir")
+    monkeypatch.setattr(rv, "STATUS_FILE", tmp_path / "review-dir" / "status.json")
+    monkeypatch.setattr(rv, "PASSED_FILE", tmp_path / "review-dir" / "passed")
+    monkeypatch.setattr(rv, "resolve_commit", lambda ref: HEAD_SHA)
+    monkeypatch.setattr(rv, "is_worktree_clean", lambda: True)
+    monkeypatch.setattr(rv, "changed_lines", lambda diff_range: {"src/big.ts": 500})
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +73,17 @@ class TestBuildPrompt:
 
     def test_frames_reviewer_as_other_engineer(self):
         assert "다른 엔지니어" in rv.build_prompt("main")
+
+    def test_asks_for_repro_and_confirmation(self):
+        prompt = rv.build_prompt("main")
+        assert "repro" in prompt and "confirmed" in prompt
+
+    def test_head_reviews_range(self):
+        assert "git diff abc...def" in rv.build_prompt("abc", head="def")
+
+    def test_head_reads_files_from_snapshot_not_worktree(self):
+        assert "git show def:<경로>" in rv.build_prompt("abc", head="def")
+        assert "git show" not in rv.build_prompt("main").split("확인하라.")[1].split("\n")[0]
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +130,13 @@ class TestParseRaw:
         with pytest.raises(ValueError, match="risk"):
             rv.parse_raw("codex", json.dumps(bad))
 
+    @pytest.mark.parametrize("key", ["repro", "confirmed"])
+    def test_missing_new_finding_key_raises(self, key):
+        finding = _finding()
+        del finding[key]
+        with pytest.raises(ValueError, match=key):
+            rv.parse_raw("codex", json.dumps(_result([finding])))
+
     def test_invalid_priority_raises(self):
         with pytest.raises(ValueError, match="priority"):
             rv.parse_raw("codex", json.dumps(_result([_finding(priority=7)])))
@@ -145,6 +177,58 @@ class TestMerge:
         ])}, failed={})
         assert merged["blocking"] == 1
 
+    def test_unconfirmed_p1_is_not_blocking(self):
+        merged = rv.merge({"claude": _result([_finding(priority=1, confirmed=False)])}, failed={})
+        assert merged["blocking"] == 0
+        assert len(merged["findings"]) == 1
+
+    def test_unconfirmed_p0_still_blocks(self):
+        # confirmed는 모델이 스스로 매긴다. 읽기 전용이라 확인하지 못한 P0를 통과시키면 안 된다.
+        merged = rv.merge({"claude": _result([_finding(priority=0, confirmed=False)])}, failed={})
+        assert merged["blocking"] == 1
+
+    def test_unconfirmed_p1_agreed_by_two_reviewers_blocks(self):
+        merged = rv.merge({
+            "claude": _result([_finding(priority=1, confirmed=False)]),
+            "codex": _result([_finding(priority=1, confirmed=False)]),
+        }, failed={})
+        assert merged["findings"][0]["agreed_by"] == ["claude", "codex"]
+        assert merged["blocking"] == 1
+
+    def test_confirmed_by_any_reviewer_wins(self):
+        merged = rv.merge({
+            "claude": _result([_finding(confirmed=False, repro="")]),
+            "codex": _result([_finding(confirmed=True, repro="run x")]),
+        }, failed={})
+        f = merged["findings"][0]
+        assert f["confirmed"] is True and f["repro"] == "run x"
+        assert merged["blocking"] == 1
+
+    def test_unconfirmed_higher_priority_not_upgraded_by_confirmed_lower(self):
+        merged = rv.merge({
+            "claude": _result([_finding(priority=2, confirmed=True)]),
+            "codex": _result([_finding(priority=1, confirmed=False)]),
+        }, failed={})
+        f = merged["findings"][0]
+        assert f["priority"] == 1 and f["confirmed"] is False
+        assert merged["blocking"] == 0
+
+    def test_confirmed_same_priority_stays_confirmed(self):
+        merged = rv.merge({
+            "claude": _result([_finding(priority=1, confirmed=False)]),
+            "codex": _result([_finding(priority=1, confirmed=True)]),
+        }, failed={})
+        assert merged["blocking"] == 1
+
+    def test_legacy_finding_without_confirmed_counts_as_confirmed(self):
+        legacy = _finding()
+        del legacy["confirmed"]
+        assert rv.blocking_findings({"findings": [legacy]}) == [legacy]
+
+    def test_summary_marks_unconfirmed(self):
+        merged = rv.merge({"claude": _result([_finding(confirmed=False)])}, failed={})
+        assert "(미확인)" in rv.format_summary(merged)
+
     def test_findings_sorted_by_priority(self):
         merged = rv.merge({"claude": _result([_finding(file="a", priority=3), _finding(file="b", priority=0)])}, failed={})
         assert [f["priority"] for f in merged["findings"]] == [0, 3]
@@ -167,69 +251,6 @@ class TestMerge:
 # ---------------------------------------------------------------------------
 # 실행 모드
 # ---------------------------------------------------------------------------
-
-class TestUseHerdr:
-    def test_true_inside_herdr(self, monkeypatch):
-        monkeypatch.setenv("HERDR_ENV", "1")
-        with patch("shutil.which", return_value="/bin/herdr"):
-            assert rv.use_herdr(allow=True)
-
-    def test_false_outside_herdr(self, monkeypatch):
-        monkeypatch.delenv("HERDR_ENV", raising=False)
-        assert not rv.use_herdr(allow=True)
-
-    def test_false_when_disabled(self, monkeypatch):
-        monkeypatch.setenv("HERDR_ENV", "1")
-        with patch("shutil.which", return_value="/bin/herdr"):
-            assert not rv.use_herdr(allow=False)
-
-
-class TestRunInHerdr:
-    def test_starts_all_before_waiting_and_closes_own_panes(self):
-        calls = []
-
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd[1:3])
-            return MagicMock(returncode=0, stdout="", stderr="")
-
-        with patch("subprocess.run", side_effect=fake_run), \
-                patch("herdr_layout.split_pane", side_effect=["w1:p7", "w1:p8"]):
-            errors = rv.run_in_herdr({"claude": "cmd1", "codex": "cmd2"}, timeout_sec=10)
-
-        actions = [c[1] for c in calls]
-        assert actions == ["run", "run", "wait-output", "wait-output", "close", "close"]
-        assert errors == {}
-
-    def test_done_marker_not_matched_by_command_echo(self):
-        sent = []
-
-        def fake_run(cmd, **kwargs):
-            if cmd[1:3] == ["pane", "run"]:
-                sent.append(cmd[4])
-            if cmd[1:3] == ["pane", "wait-output"]:
-                sent.append(cmd[cmd.index("--match") + 1])
-            out = json.dumps({"result": {"pane": {"pane_id": "w1:p9"}}})
-            return MagicMock(returncode=0, stdout=out, stderr="")
-
-        with patch("subprocess.run", side_effect=fake_run), \
-                patch("herdr_layout.split_pane", return_value="w1:p9"):
-            rv.run_in_herdr({"claude": "cmd1"}, timeout_sec=10)
-
-        command_text, marker = sent
-        assert marker not in command_text
-
-    def test_wait_failure_reported_per_reviewer(self):
-        def fake_run(cmd, **kwargs):
-            if cmd[1:3] == ["pane", "wait-output"]:
-                return MagicMock(returncode=1, stdout="", stderr='{"error":"timeout"}')
-            out = json.dumps({"result": {"pane": {"pane_id": "w1:p9"}}})
-            return MagicMock(returncode=0, stdout=out, stderr="")
-
-        with patch("subprocess.run", side_effect=fake_run), \
-                patch("herdr_layout.split_pane", return_value="w1:p9"):
-            errors = rv.run_in_herdr({"codex": "cmd"}, timeout_sec=10)
-        assert "codex" in errors
-
 
 class TestRunLocal:
     def test_timeout_reported_per_reviewer(self):
@@ -271,7 +292,7 @@ class TestRunReview:
         }
         out = tmp_path / "review.json"
         with patch.object(rv, "run_local", side_effect=self._fake_runner(raws)):
-            merged = rv.run_review("main", out, config=config, work_dir=work, allow_herdr=False)
+            merged = rv.run_review("main", out, config=config, work_dir=work)
         assert merged["blocking"] == 1
         assert "codex" in merged["failed"]
         assert json.loads(out.read_text())["blocking"] == 1
@@ -280,7 +301,7 @@ class TestRunReview:
         work = tmp_path / ".review"
         with patch.object(rv, "run_local", return_value={}):
             with pytest.raises(rv.ReviewError):
-                rv.run_review("main", tmp_path / "r.json", config=config, work_dir=work, allow_herdr=False)
+                rv.run_review("main", tmp_path / "r.json", config=config, work_dir=work)
 
     def test_reviewer_filter(self, tmp_path, config):
         work = tmp_path / ".review"
@@ -292,10 +313,8 @@ class TestRunReview:
             return {}
 
         with patch.object(rv, "run_local", side_effect=runner):
-            rv.run_review("main", tmp_path / "r.json", config=config, work_dir=work,
-                          allow_herdr=False, only=["codex"])
+            rv.run_review("main", tmp_path / "r.json", config=config, work_dir=work, only=["codex"])
         assert list(seen) == ["codex"]
-
 
 class TestFixPrompt:
     def test_lists_blocking_findings_and_lessons_rule(self):
@@ -307,6 +326,10 @@ class TestFixPrompt:
         assert "SQL injection" in prompt and "a.ts:10" in prompt
         assert "naming nit" not in prompt
         assert "docs/LESSONS.md" in prompt
+
+    def test_includes_repro(self):
+        merged = rv.merge({"claude": _result([_finding(priority=0, repro="curl /x?id=1'")])}, failed={})
+        assert "curl /x?id=1'" in rv.build_fix_prompt(merged, project="P")
 
 
 class TestReviewFindingsRegression:
@@ -323,8 +346,7 @@ class TestReviewFindingsRegression:
     def test_unknown_reviewer_name_raises(self, tmp_path):
         config = {"roles": {"reviewers": [CLAUDE_REVIEWER]}, "timeouts_sec": {"step": 1, "review": 1}}
         with pytest.raises(rv.ReviewError, match="nope"):
-            rv.run_review("main", tmp_path / "r.json", config=config, work_dir=tmp_path,
-                          allow_herdr=False, only=["nope"])
+            rv.run_review("main", tmp_path / "r.json", config=config, work_dir=tmp_path, only=["nope"])
 
     def test_runner_error_marks_reviewer_failed_even_with_raw(self, tmp_path):
         config = {"roles": {"reviewers": [CLAUDE_REVIEWER, CODEX_REVIEWER]}, "timeouts_sec": {"step": 1, "review": 1}}
@@ -335,6 +357,130 @@ class TestReviewFindingsRegression:
             return {"codex": "exit 1: auth error"}
 
         with patch.object(rv, "run_local", side_effect=runner):
-            merged = rv.run_review("main", tmp_path / "r.json", config=config, work_dir=tmp_path, allow_herdr=False)
+            merged = rv.run_review("main", tmp_path / "r.json", config=config, work_dir=tmp_path)
         assert merged["reviewers"] == ["claude"]
         assert merged["failed"] == {"codex": "exit 1: auth error"}
+
+
+# ---------------------------------------------------------------------------
+# 리뷰어 선택 (위험 등급)
+# ---------------------------------------------------------------------------
+
+class TestChooseReviewers:
+    CONFIG = {"roles": {"reviewers": [CLAUDE_REVIEWER, CODEX_REVIEWER]}}
+
+    def test_small_change_uses_single_reviewer(self):
+        assert rv.choose_reviewers(self.CONFIG, {"src/a.ts": 40, "src/b.ts": 30}) == ["claude"]
+
+    def test_large_change_uses_cross_review(self):
+        assert rv.choose_reviewers(self.CONFIG, {"src/a.ts": 101}) == ["claude", "codex"]
+
+    @pytest.mark.parametrize("path", ["src/auth/login.ts", ".claude/settings.json", "db/migrations/1.sql"])
+    def test_sensitive_path_always_cross_reviewed(self, path):
+        assert rv.choose_reviewers(self.CONFIG, {path: 1}) == ["claude", "codex"]
+
+    def test_generated_files_do_not_count(self):
+        assert rv.choose_reviewers(self.CONFIG, {"package-lock.json": 5000, "src/a.ts": 10}) == ["claude"]
+
+    def test_threshold_from_config(self):
+        config = {**self.CONFIG, "review": {"single_reviewer_max_lines": 5}}
+        assert rv.choose_reviewers(config, {"src/a.ts": 10}) == ["claude", "codex"]
+
+
+# ---------------------------------------------------------------------------
+# 검증 리뷰 · 상태 · 캐시
+# ---------------------------------------------------------------------------
+
+def _writer(work, results):
+    """run_local 대역: 리뷰어별 raw 결과를 쓰고, 실행된 명령을 기록한다."""
+    seen = {}
+
+    def runner(commands, timeout_sec):
+        seen.update(commands)
+        for name in commands:
+            if name in results:
+                (work / f"review-{name}.raw.json").write_text(json.dumps(results[name]))
+        return {}
+    return runner, seen
+
+
+class TestVerifyReview:
+    CONFIG = {"roles": {"reviewers": [CLAUDE_REVIEWER, CODEX_REVIEWER]}, "timeouts_sec": {"step": 1, "review": 1}}
+
+    def _previous(self):
+        merged = rv.merge({"codex": _result([_finding(priority=1, title="race in cache")], score=40)}, failed={})
+        return {"base": "main", "head": "a" * 40, **merged}
+
+    def test_prompt_has_previous_findings_and_fix_diff_only(self):
+        prompt = rv.build_verify_prompt(self._previous())
+        assert "race in cache" in prompt
+        assert f"git diff {'a' * 40}" in prompt
+        assert "전체를 다시 리뷰하지 마라" in prompt
+
+    def test_only_reviewers_that_found_blocking_issues_rerun(self, tmp_path):
+        work = tmp_path / "w"
+        work.mkdir()
+        runner, seen = _writer(work, {"codex": _result()})
+        with patch.object(rv, "run_local", side_effect=runner):
+            merged = rv.run_review("main", tmp_path / "r.json", config=self.CONFIG, work_dir=work,
+                                   previous=self._previous())
+        assert list(seen) == ["codex"]
+        assert merged["mode"] == "verify" and merged["blocking"] == 0
+        assert "race in cache" in (work / "review-prompt.md").read_text()
+
+    def test_verify_keeps_first_review_risk(self, tmp_path):
+        work = tmp_path / "w"
+        work.mkdir()
+        runner, _ = _writer(work, {"codex": _result(score=5)})
+        with patch.object(rv, "run_local", side_effect=runner):
+            merged = rv.run_review("main", tmp_path / "r.json", config=self.CONFIG, work_dir=work,
+                                   previous=self._previous())
+        assert merged["risk"]["score"] == 40
+
+
+class TestStatusAndCache:
+    CONFIG = {"roles": {"reviewers": [CLAUDE_REVIEWER, CODEX_REVIEWER]}, "timeouts_sec": {"step": 1, "review": 1}}
+
+    def test_passing_review_records_head_and_status(self, tmp_path):
+        work = tmp_path / "w"
+        work.mkdir()
+        runner, _ = _writer(work, {"claude": {"structured_output": _result()}, "codex": _result()})
+        with patch.object(rv, "run_local", side_effect=runner):
+            merged = rv.run_review("main", tmp_path / "r.json", config=self.CONFIG, work_dir=work)
+        assert merged["head"] == HEAD_SHA
+        assert rv.is_passed(HEAD_SHA)
+        status = json.loads(rv.STATUS_FILE.read_text())
+        assert status["state"] == "done" and status["mode"] == "first" and status["blocking"] == 0
+
+    def test_blocking_review_is_not_cached(self, tmp_path):
+        work = tmp_path / "w"
+        work.mkdir()
+        runner, _ = _writer(work, {"codex": _result([_finding(priority=0)])})
+        with patch.object(rv, "run_local", side_effect=runner):
+            rv.run_review("main", tmp_path / "r.json", config=self.CONFIG, work_dir=work, only=["codex"])
+        assert not rv.is_passed(HEAD_SHA)
+
+    def test_dirty_worktree_is_not_cached(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(rv, "is_worktree_clean", lambda: False)
+        work = tmp_path / "w"
+        work.mkdir()
+        runner, _ = _writer(work, {"codex": _result()})
+        with patch.object(rv, "run_local", side_effect=runner):
+            rv.run_review("main", tmp_path / "r.json", config=self.CONFIG, work_dir=work, only=["codex"])
+        assert not rv.is_passed(HEAD_SHA)
+
+    def test_own_work_dir_is_removed(self, tmp_path):
+        def runner(commands, timeout_sec):
+            for name, command in commands.items():
+                raw = command.split("-o ")[1].split(" ")[0]
+                Path(raw).write_text(json.dumps(_result()))
+            return {}
+        with patch.object(rv, "run_local", side_effect=runner):
+            rv.run_review("main", tmp_path / "r.json", config=self.CONFIG, only=["codex"])
+        assert [p.name for p in rv.REVIEW_DIR.iterdir() if p.name.startswith("run-")] == []
+
+
+class TestFixPromptSameKind:
+    def test_asks_to_fix_every_place_of_same_kind(self):
+        merged = rv.merge({"claude": _result([_finding(priority=0)])}, failed={})
+        assert "같은 종류의 문제가 있는 모든 자리" in rv.build_fix_prompt(merged, project="P")
