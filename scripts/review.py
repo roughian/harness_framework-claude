@@ -139,18 +139,23 @@ def build_prompt(base: str, *, head: Optional[str] = None, focus: str = "", cont
     return "\n".join(parts) + "\n"
 
 
-def build_verify_prompt(previous: dict) -> str:
+def build_verify_prompt(previous: dict, head: Optional[str] = None) -> str:
     """검증 리뷰: 이전 차단 지적이 고쳐졌는지, 수정이 새 문제를 만들었는지만 본다."""
     items = "\n".join(
         f"[{n}] P{f['priority']} {f['file']}:{f['line_start']}-{f['line_end']} {f['title']} — {f['body']}"
         + (f" (재현: {f['repro']})" if f.get("repro") else "")
         for n, f in enumerate(blocking_findings(previous), 1)
     )
+    if head:  # pre-push: push할 커밋끼리 비교한다
+        diff_step = (f"2. `git diff {previous['head']}..{head}`로 그 뒤의 수정만 확인하라. "
+                     f"작업 트리는 리뷰 대상과 다를 수 있으니 파일은 `git show {head}:<경로>`로 읽어라.\n")
+    else:
+        diff_step = f"2. `git diff {previous['head']}`로 그 뒤의 수정만 확인하라.\n"
     return (
         "너는 이전 리뷰의 차단 지적이 고쳐졌는지 확인한다. 코드를 수정하지 마라. 전체를 다시 리뷰하지 마라.\n\n"
         f"## 이전 차단 지적\n\n{items}\n\n"
         "1. REVIEW.md(특히 '지적하지 말 것')를 읽어라.\n"
-        f"2. `git diff {previous['head']}`로 그 뒤의 수정만 확인하라.\n"
+        f"{diff_step}"
         "3. 고쳐졌음을 확인한 이전 지적의 번호만 resolved에 넣어라. 확인하지 못했거나 남은 지적은 resolved에 넣지 마라"
         "(넣지 않은 지적은 그대로 차단으로 이어진다). 남은 지적은 같은 위치·등급으로 findings에도 다시 넣어라.\n"
         "4. 위 수정 diff가 새로 만든 P0/P1만 새 지적으로 추가하라. 수정 diff 밖의 문제는 지적하지 마라.\n"
@@ -361,10 +366,10 @@ def carry_unresolved(merged: dict, previous: dict, results: dict) -> dict:
     """
     resolved_sets = [set(r.get("resolved", [])) for r in results.values()]
     resolved = set.intersection(*resolved_sets) if resolved_sets else set()
-    findings = list(merged["findings"])
-    for n, f in enumerate(blocking_findings(previous), 1):
-        if n not in resolved and not any(_overlaps(f, m) for m in findings):
-            findings.append({**f, "carried": True})
+    unresolved = [f for n, f in enumerate(blocking_findings(previous), 1) if n not in resolved]
+    # 남은 지적은 원래 속성 그대로 둔다. 같은 자리를 미확인·기존 문제로 다시 보고해 차단이 풀리지 않게 한다.
+    findings = [m for m in merged["findings"] if not any(_overlaps(f, m) for f in unresolved)]
+    findings += [{**f, "carried": True} for f in unresolved]
     findings.sort(key=lambda f: (f["priority"], f["file"], f["line_start"]))
     return {**merged, "findings": findings, "blocking": sum(1 for f in findings if _is_blocking(f))}
 
@@ -408,7 +413,7 @@ def run_review(base: str, out: Path, *, config: Optional[dict] = None, work_dir:
     mode = "verify" if previous else "first"
     status = {"state": "running", "mode": mode, "reviewers": list(reviewers), "started_at": _now()}
     write_status(status)
-    prompt = build_verify_prompt(previous) if previous else build_prompt(base, head=head, focus=focus,
+    prompt = build_verify_prompt(previous, head) if previous else build_prompt(base, head=head, focus=focus,
                                                                          context=context)
     results, failed = _run_reviewers(reviewers, prompt, config["timeouts_sec"]["review"], work_dir)
     if not results:

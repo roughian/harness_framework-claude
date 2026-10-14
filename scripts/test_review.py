@@ -449,6 +449,20 @@ class TestVerifyReview:
         assert merged["blocking"] == 1
         assert merged["findings"][0]["title"] == "race in cache" and merged["findings"][0]["carried"]
 
+    def test_reported_again_with_weaker_flags_still_blocks(self):
+        # 남은 지적을 미확인·기존 문제로 다시 보고해도 원래 차단 속성이 유지된다.
+        weaker = _finding(priority=1, confirmed=False, pre_existing=True, title="race (again)")
+        merged = rv.carry_unresolved(
+            rv.merge({"codex": {**_result([weaker]), "resolved": []}}, failed={}),
+            self._previous(), {"codex": {"resolved": []}})
+        assert merged["blocking"] == 1
+        assert [f["title"] for f in merged["findings"]] == ["race in cache"]
+
+    def test_verify_prompt_with_head_compares_commits_not_worktree(self):
+        prompt = rv.build_verify_prompt(self._previous(), head="c" * 40)
+        assert f"git diff {'a' * 40}..{'c' * 40}" in prompt
+        assert f"git show {'c' * 40}:<경로>" in prompt
+
     def test_verify_prompt_numbers_previous_findings(self):
         assert "[1] P1" in rv.build_verify_prompt(self._previous())
 
