@@ -508,6 +508,8 @@ class TestStatusAndCache:
         with patch.object(rv, "run_local", side_effect=runner):
             rv.run_review("main", tmp_path / "r.json", config=self.CONFIG, work_dir=work, only=["codex"])
         assert not rv.is_passed("b" * 40, HEAD_SHA)
+        # 커밋 안 된 변경이 섞인 결과를 HEAD 커밋의 리뷰로 저장하면 PR 단계가 그 커밋의 결과로 믿는다
+        assert rv.load_result(HEAD_SHA) is None
 
     def test_own_work_dir_is_removed(self, tmp_path):
         def runner(commands, timeout_sec):

@@ -117,7 +117,7 @@ def choose_reviewers(config: dict, lines_by_path: dict) -> list:
 
 # ---------- 프롬프트 ----------
 
-def build_prompt(base: str, *, head: Optional[str] = None, focus: str = "", context: str = "") -> str:
+def build_prompt(base: str, *, head: Optional[str] = None) -> str:
     diff = f"git diff {base}...{head}" if head else f"git diff {base}"
     read_hint = f" 작업 트리는 리뷰 대상과 다를 수 있으니 파일은 `git show {head}:<경로>`로 읽어라." if head else ""
     parts = [
@@ -134,10 +134,6 @@ def build_prompt(base: str, *, head: Optional[str] = None, focus: str = "", cont
         "summary에 어디까지 확인했는지 적어라.",
         "7. 결과는 주어진 JSON 스키마 형식 하나로만 출력하라. 첫 리뷰이므로 resolved는 빈 배열로 둔다.",
     ]
-    if focus:
-        parts.append(f"\n집중 영역: {focus}")
-    if context:
-        parts.append(f"\n참고 정보:\n{context}")
     return "\n".join(parts) + "\n"
 
 
@@ -412,8 +408,7 @@ def _run_reviewers(reviewers: dict, prompt: str, timeout_sec: int, work_dir: Opt
 
 
 def run_review(base: str, out: Path, *, config: Optional[dict] = None, work_dir: Optional[Path] = None,
-               only: Optional[list] = None, head: Optional[str] = None, previous: Optional[dict] = None,
-               focus: str = "", context: str = "") -> dict:
+               only: Optional[list] = None, head: Optional[str] = None, previous: Optional[dict] = None) -> dict:
     """리뷰를 돌려 병합 결과를 out에 쓰고 돌려준다. previous가 있으면 검증 리뷰다."""
     config = config or cfg.load_config()
     selected = _select(config, base, head, previous, only)
@@ -426,8 +421,7 @@ def run_review(base: str, out: Path, *, config: Optional[dict] = None, work_dir:
     mode = "verify" if previous else "first"
     status = {"state": "running", "mode": mode, "reviewers": list(reviewers), "started_at": _now()}
     write_status(status)
-    prompt = build_verify_prompt(previous, head) if previous else build_prompt(base, head=head, focus=focus,
-                                                                         context=context)
+    prompt = build_verify_prompt(previous, head) if previous else build_prompt(base, head=head)
     results, failed = _run_reviewers(reviewers, prompt, config["timeouts_sec"]["review"], work_dir)
     if not results:
         write_status({**status, "state": "failed", "finished_at": _now()})
@@ -439,11 +433,12 @@ def run_review(base: str, out: Path, *, config: Optional[dict] = None, work_dir:
         if previous["risk"]["score"] > merged["risk"]["score"]:
             merged["risk"] = previous["risk"]  # 검증 리뷰는 수정분만 보므로 위험도는 첫 리뷰 값을 유지한다
     _write_json_atomic(out, merged)
-    archive_result(merged, reviewed_head)
     write_status({**status, "state": "done", "finished_at": _now(), "blocking": merged["blocking"]})
-    # 통과한 커밋은 pre-push가 다시 리뷰하지 않는다. 커밋되지 않은 변경이 섞였으면 기록하지 않는다.
-    if not merged["blocking"] and (head or is_worktree_clean()):
-        record_passed(merge_base(base, reviewed_head), reviewed_head)
+    # 커밋되지 않은 변경이 섞인 리뷰는 커밋의 기록으로 남기지 않는다(PR 단계·pre-push가 그 커밋의 결과로 믿는다).
+    if head or is_worktree_clean():
+        archive_result(merged, reviewed_head)
+        if not merged["blocking"]:
+            record_passed(merge_base(base, reviewed_head), reviewed_head)
     return merged
 
 

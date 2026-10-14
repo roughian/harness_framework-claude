@@ -69,12 +69,26 @@ def _status(gh):
 
 # ---------- 결과 재사용 ----------
 
-def test_reuses_review_recorded_at_push(tmp_path, monkeypatch):
+def _archive(tmp_path, monkeypatch, base):
     monkeypatch.setattr(rv, "RESULTS_DIR", tmp_path)
-    rv.archive_result(_merged(), HEAD)
+    rv.archive_result({**_merged(), "base": base}, HEAD)
+    # merge_base(x, HEAD): PR 기준(origin/main)과 첫 push의 기준은 "m", 그 밖(이전 push 끝)은 자기 자신
+    monkeypatch.setattr(rv, "merge_base", lambda a, b: "m" if a in ("origin/main", "m") else a)
+
+
+def test_reuses_review_recorded_at_push(tmp_path, monkeypatch):
+    _archive(tmp_path, monkeypatch, base="m")
     with patch.object(rv, "run_review") as run:
         assert pr.review_for(HEAD, "main")["blocking"] == 0
     run.assert_not_called()
+
+
+def test_record_of_later_push_only_is_not_reused(tmp_path, monkeypatch):
+    # 이미 있는 브랜치에 push하면 그 push분만 리뷰된다. PR 전체 위험이 빠지므로 PR 범위를 다시 리뷰한다.
+    _archive(tmp_path, monkeypatch, base="p" * 40)
+    with patch.object(rv, "run_review", return_value="fresh") as run:
+        assert pr.review_for(HEAD, "main") == "fresh"
+    assert run.call_args.args[0] == "origin/main"
 
 
 def test_reviews_now_only_when_no_record(tmp_path, monkeypatch):
@@ -135,6 +149,11 @@ def test_comment_orders_decisions_first():
 
 # ---------- 점수·계획 ----------
 
+def test_scope_score_is_monotonic_between_bounds():
+    assert 4 < pr.scope_score(15, 500) < 20
+    assert pr.scope_score(10, 500) <= pr.scope_score(20, 500)
+
+
 @pytest.mark.parametrize("files,lines,expected", [
     (0, 0, 0), (5, 100, 4), (1, 10, 1), (30, 10, 20), (1, 2001, 20), (100, 5000, 20),
 ])
@@ -160,6 +179,7 @@ def test_plan_actions_per_level(level, reviewers, auto_off, notify):
     assert plan["label"] == f"risk:{level}"
     assert plan["reviewers"] == reviewers and plan["notify"] == notify
     assert plan["disable_auto_merge"] is auto_off and plan["fail"] is False
+    assert plan["auto_merge_candidate"] is (level == "low")
 
 
 def test_solo_developer_without_reviewers_has_no_decision_noise():

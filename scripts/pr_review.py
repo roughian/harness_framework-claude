@@ -55,12 +55,16 @@ def load_github_config() -> dict:
 
 
 def review_for(head: str, base_ref: str) -> dict:
-    """push 때 남긴 이 커밋의 리뷰 결과. 없으면 지금 리뷰한다."""
+    """push 때 남긴 이 커밋의 리뷰 결과. PR 전체 범위를 본 기록이 아니면 지금 리뷰한다.
+
+    이미 있는 브랜치에 push하면 그 push분만 리뷰하므로, 그 기록을 PR 전체 결과로 쓰면 앞 push의 위험이 빠진다.
+    """
+    pr_base = f"origin/{base_ref}"
     result = review.load_result(head)
-    if result is not None:
+    if result is not None and review.merge_base(result["base"], head) == review.merge_base(pr_base, head):
         return result
-    print(f"  {head[:7]}의 리뷰 기록이 없어 지금 리뷰합니다.")
-    return review.run_review(f"origin/{base_ref}", review.DEFAULT_OUT, head=head)
+    print(f"  {head[:7]}에 PR 전체 범위의 리뷰 기록이 없어 지금 리뷰합니다.")
+    return review.run_review(pr_base, review.DEFAULT_OUT, head=head)
 
 
 # ---------- 점수·계획 (순수 함수) ----------
