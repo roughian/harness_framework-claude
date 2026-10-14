@@ -458,6 +458,15 @@ class TestVerifyReview:
         assert merged["blocking"] == 1
         assert [f["title"] for f in merged["findings"]] == ["race in cache"]
 
+    def test_new_blocking_finding_at_same_place_is_kept(self):
+        # 남은 지적과 겹치는 자리의 새 차단 지적은 버리지 않는다.
+        new_issue = _finding(priority=0, title="new injection")
+        merged = rv.carry_unresolved(
+            rv.merge({"codex": {**_result([new_issue]), "resolved": []}}, failed={}),
+            self._previous(), {"codex": {"resolved": []}})
+        assert sorted(f["title"] for f in merged["findings"]) == ["new injection", "race in cache"]
+        assert merged["blocking"] == 2
+
     def test_verify_prompt_with_head_compares_commits_not_worktree(self):
         prompt = rv.build_verify_prompt(self._previous(), head="c" * 40)
         assert f"git diff {'a' * 40}..{'c' * 40}" in prompt

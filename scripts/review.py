@@ -367,8 +367,10 @@ def carry_unresolved(merged: dict, previous: dict, results: dict) -> dict:
     resolved_sets = [set(r.get("resolved", [])) for r in results.values()]
     resolved = set.intersection(*resolved_sets) if resolved_sets else set()
     unresolved = [f for n, f in enumerate(blocking_findings(previous), 1) if n not in resolved]
-    # 남은 지적은 원래 속성 그대로 둔다. 같은 자리를 미확인·기존 문제로 다시 보고해 차단이 풀리지 않게 한다.
-    findings = [m for m in merged["findings"] if not any(_overlaps(f, m) for f in unresolved)]
+    # 남은 지적은 원래 속성 그대로 둔다. 같은 자리를 미확인·기존 문제로 약하게 다시 보고한 것만 버리고,
+    # 같은 자리의 새 차단 지적은 남긴다.
+    findings = [m for m in merged["findings"]
+                if _is_blocking(m) or not any(_overlaps(f, m) for f in unresolved)]
     findings += [{**f, "carried": True} for f in unresolved]
     findings.sort(key=lambda f: (f["priority"], f["file"], f["line_start"]))
     return {**merged, "findings": findings, "blocking": sum(1 for f in findings if _is_blocking(f))}
