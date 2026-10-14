@@ -36,6 +36,8 @@ REVIEW_DIR = ROOT / ".review"
 DEFAULT_OUT = REVIEW_DIR / "latest.json"
 STATUS_FILE = REVIEW_DIR / "status.json"
 PASSED_FILE = REVIEW_DIR / "passed"
+# 커밋별 리뷰 결과. PR 단계(pr_review.py)가 다시 리뷰하지 않고 이 결과를 쓴다.
+RESULTS_DIR = REVIEW_DIR / "results"
 
 BLOCKING_MAX_PRIORITY = 1
 # 확인되지 않은 P1도 이만큼의 리뷰어가 같은 등급으로 지적하면 차단한다.
@@ -338,6 +340,15 @@ def is_passed(base: str, head: str) -> bool:
     return False
 
 
+def archive_result(result: dict, head: str):
+    _write_json_atomic(RESULTS_DIR / f"{head}.json", result)
+
+
+def load_result(head: str) -> Optional[dict]:
+    path = RESULTS_DIR / f"{head}.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
 def record_passed(base: str, head: str):
     if not is_passed(base, head):
         PASSED_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -428,6 +439,7 @@ def run_review(base: str, out: Path, *, config: Optional[dict] = None, work_dir:
         if previous["risk"]["score"] > merged["risk"]["score"]:
             merged["risk"] = previous["risk"]  # 검증 리뷰는 수정분만 보므로 위험도는 첫 리뷰 값을 유지한다
     _write_json_atomic(out, merged)
+    archive_result(merged, reviewed_head)
     write_status({**status, "state": "done", "finished_at": _now(), "blocking": merged["blocking"]})
     # 통과한 커밋은 pre-push가 다시 리뷰하지 않는다. 커밋되지 않은 변경이 섞였으면 기록하지 않는다.
     if not merged["blocking"] and (head or is_worktree_clean()):

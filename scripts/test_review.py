@@ -41,6 +41,7 @@ def _isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(rv, "REVIEW_DIR", tmp_path / "review-dir")
     monkeypatch.setattr(rv, "STATUS_FILE", tmp_path / "review-dir" / "status.json")
     monkeypatch.setattr(rv, "PASSED_FILE", tmp_path / "review-dir" / "passed")
+    monkeypatch.setattr(rv, "RESULTS_DIR", tmp_path / "review-dir" / "results")
     monkeypatch.setattr(rv, "resolve_commit", lambda ref: HEAD_SHA)
     monkeypatch.setattr(rv, "is_worktree_clean", lambda: True)
     monkeypatch.setattr(rv, "changed_lines", lambda diff_range: {"src/big.ts": 500})
@@ -487,6 +488,7 @@ class TestStatusAndCache:
             merged = rv.run_review("main", tmp_path / "r.json", config=self.CONFIG, work_dir=work)
         assert merged["head"] == HEAD_SHA
         assert rv.is_passed("b" * 40, HEAD_SHA)
+        assert rv.load_result(HEAD_SHA)["blocking"] == 0
         status = json.loads(rv.STATUS_FILE.read_text())
         assert status["state"] == "done" and status["mode"] == "first" and status["blocking"] == 0
 

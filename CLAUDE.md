@@ -33,6 +33,7 @@ npm run lint     # ESLint
 npm run test     # 테스트
 python3 scripts/execute.py <phase>   # phase 실행 (+ 교차 리뷰 게이트)
 python3 scripts/review.py --base main  # 리뷰만 실행
+python3 scripts/pr_review.py --pr <번호>  # PR에 push 리뷰 결과 붙이기(라벨·코멘트·AI Review 체크)
 scripts/install_git_hooks.sh           # git pre-push 리뷰 훅 설치 (클론 후 1회)
 
 @docs/ARCHITECTURE.md

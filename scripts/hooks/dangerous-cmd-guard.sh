@@ -1,7 +1,7 @@
 #!/bin/bash
 # Dangerous Command Guard — PreToolUse[Bash]
 # rm -rf, git push --force, git reset --hard, DROP TABLE, --no-verify(리뷰 훅 우회) 등 위험 명령어 차단.
-# 로컬 게이트는 실수 방지용이다. 셸을 가진 행위자의 의도적 우회는 막지 않는다(진짜 강제는 PR required check).
+# 로컬 게이트는 실수 방지용이다. 셸을 가진 행위자의 의도적 우회는 막지 않는다(진짜 강제는 required로 건 상태 체크 AI Review).
 
 INPUT=$(cat)
 COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty')

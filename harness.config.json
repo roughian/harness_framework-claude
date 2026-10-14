@@ -33,8 +33,6 @@
     "review": 1800
   },
   "github": {
-    "model": "",
-    "effort": "",
     "reviewers": [],
     "seniors": [],
     "notify": []

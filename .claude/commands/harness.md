@@ -192,7 +192,6 @@ herdr 화면 배치 (herdr 안일 때):
    | reviewer `claude` | Anthropic 모델 | Index 최상위. **worker와 다른 모델**로 고른다. 작성자의 약점을 보완하기 위해서다 |
    | reviewer `codex` | `codex` CLI로 돌릴 수 있는 OpenAI 모델 | Index 최상위. model id가 불확실하면 비워서 codex 기본값을 쓴다 |
    | 세션 안 에이전트 | Agent tool의 `model` 인자 | 아래 배정표의 기본 등급에서 시작한다(frontmatter에는 모델이 없다) |
-   | GitHub PR 리뷰 | OpenAI API 모델(`github.model`, `github.effort`) | Index 최상위, 가장 높은 reasoning effort |
 
 3. `roles.*.model`, `selection.selected_at`(YYYY-MM-DD), `selection.rationale`(점수·속도·비용 한 줄)을 갱신하고, 고른 결과를 사용자에게 알린다.
    - effort는 `max`를 유지한다.
@@ -240,10 +239,30 @@ herdr 화면 배치 (herdr 안일 때):
 |---|---|---|---|
 | phase 끝 | `scripts/execute.py` 리뷰 게이트 | 첫 리뷰 → 수정 → 검증 리뷰(수정분만), 최대 2번 | 차단 지적이 남음(REVIEW.md 차단 규칙) → blocked |
 | `git push` | `.githooks/pre-push` → `scripts/git_review_gate.py` | push 범위. 이미 통과한 범위(`.review/passed`)는 건너뛰고, 직전 push에서 막혔으면 그 지적과 수정분만 검증한다 | 차단 지적, 리뷰어 전원 실패, 새 브랜치의 기준(main·origin/main) 없음 |
-| PR 열림·갱신 | `.github/workflows/ai-review.yml` → `scripts/pr_review.py` | 같은 `review.py` 엔진, codex 리뷰어 | REVIEW.md 등급별 액션(critical은 RFC/ADR 링크 없으면 실패) |
+| PR을 연 뒤 | `python3 scripts/pr_review.py --pr <번호>` (이 Mac에서) | 리뷰하지 않는다. push 때 남은 결과(`.review/results/<커밋>.json`)를 붙인다 | 위험도 라벨·코멘트·상태 체크 `AI Review`. 차단 지적이나 critical의 RFC/ADR 링크 누락이면 failure |
 
 - 커밋에는 리뷰를 걸지 않는다. 커밋마다 리뷰하면 가장 느려지고, push 전 리뷰와 겹친다.
-- 로컬 게이트는 **실수로 리뷰를 건너뛰는 것**만 막는다(dangerous-cmd-guard가 `--no-verify`를 막는다). 의도적 우회는 막지 않는다. 진짜 강제는 PR required check(`AI Review / review`)가 한다.
+- 로컬 게이트는 **실수로 리뷰를 건너뛰는 것**만 막는다(dangerous-cmd-guard가 `--no-verify`를 막는다). 의도적 우회는 막지 않는다. 진짜 강제는 GitHub 상태 체크 `AI Review`를 required로 건 branch protection이 한다.
 - 설치: 저장소를 받으면 `scripts/install_git_hooks.sh`를 한 번 실행한다(`core.hooksPath=.githooks`).
 - Claude가 push할 때는 `run_in_background`로 실행한다. pre-push 리뷰가 Bash timeout보다 길 수 있다.
-- PR 리뷰는 `codex` CLI를 쓴다. 저장소 secret `OPENAI_API_KEY`가 필요하다. `github.model`·`github.effort`를 비워 두면 `roles.reviewers`의 codex 설정을 쓴다.
+- 리뷰어(codex·claude)는 이 Mac의 로그인(OAuth)으로 돈다. API 키나 GitHub Actions가 필요 없다. PR 단계도 리뷰를 다시 돌리지 않는다(기록이 없는 커밋만 지금 리뷰).
+- merge를 막으려면(선택) GitHub 저장소 Settings → Branches → main 규칙 → "Require status checks to pass"에서 `AI Review`를 고른다. 이 체크는 `pr_review.py`를 한 번 실행한 뒤부터 목록에 나타난다.
+- `harness.config.json`의 `github.reviewers`(medium), `seniors`(high·critical), `notify`(critical 알림)는 사람 리뷰어의 GitHub 아이디다. 혼자 개발하면 비워 둔다(비어 있으면 아무것도 하지 않는다).
+
+### H. 새 프로젝트로 시작하기
+
+이 저장소를 그대로 clone하면 원격(origin)이 프레임워크 저장소를 가리킨다. 새 프로젝트는 원격을 바꿔 자기 저장소에 올린다.
+
+```bash
+git clone https://github.com/roughian/harness_framework-claude.git my-app
+cd my-app
+git remote rename origin framework        # 프레임워크 원본. 업데이트를 받을 때만 쓴다(필요 없으면 git remote remove origin)
+# GitHub에서 빈 저장소 my-app을 만든 뒤
+git remote add origin https://github.com/<아이디>/my-app.git
+git push -u origin main
+gh repo set-default <아이디>/my-app        # pr_review.py가 이 저장소를 쓰게 한다
+scripts/install_git_hooks.sh               # pre-push 리뷰 훅
+```
+
+- 그다음 CLAUDE.md·`docs/`를 채우고 `/harness`로 진행한다. `phases/`, `docs/PROGRESS.md`, `docs/LESSONS.md`의 프레임워크 기록은 새 프로젝트에 맞게 비운다.
+- 프레임워크 업데이트를 받으려면 `git fetch framework && git merge framework/main`(충돌은 프로젝트 쪽 문서에서 주로 난다).

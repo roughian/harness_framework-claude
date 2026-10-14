@@ -26,6 +26,7 @@ import execute as ex
 def _isolated_review_cache(tmp_path, monkeypatch):
     """리뷰 통과 기록은 임시 폴더에 쓴다."""
     monkeypatch.setattr(ex.review, "PASSED_FILE", tmp_path / "passed")
+    monkeypatch.setattr(ex.review, "RESULTS_DIR", tmp_path / "results")
 
 
 @pytest.fixture
@@ -730,6 +731,8 @@ class TestVerifyReview:
     def test_finalize_records_head_as_passed(self, executor, git_log):
         executor._finalize(_merged())
         assert ex.review.is_passed("abc1234", "abc1234")
+        # PR 단계가 다시 리뷰하지 않도록 최종 커밋에 결과를 남긴다.
+        assert ex.review.load_result("abc1234")["blocking"] == 0
 
 
 class TestHeaderModelSelection:
