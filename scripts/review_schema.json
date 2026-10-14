@@ -5,7 +5,8 @@
     "findings",
     "risk",
     "verdict",
-    "summary"
+    "summary",
+    "resolved"
   ],
   "properties": {
     "findings": {
@@ -130,6 +131,13 @@
     "summary": {
       "type": "string",
       "description": "변경 요약, 남은 위험, 어디까지 확인했는지 2-3문장"
+    },
+    "resolved": {
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "description": "검증 리뷰에서 고쳐졌음을 확인한 이전 지적 번호. 첫 리뷰는 빈 배열."
     }
   }
 }

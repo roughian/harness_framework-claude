@@ -2,7 +2,8 @@ name: AI Review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    # edited: PR 본문에 RFC/ADR 링크를 추가하면 critical 차단을 다시 판정한다.
+    types: [opened, synchronize, reopened, ready_for_review, edited]
 
 permissions:
   contents: read

@@ -516,7 +516,8 @@ class StepExecutor:
         self._record_progress("completed")
         if review_result and not review_result["blocking"]:
             # 완료 표시·PROGRESS 커밋까지 리뷰 통과로 기록해 pre-push가 같은 범위를 다시 리뷰하지 않게 한다.
-            review.record_passed(self._run_git("rev-parse", "HEAD").stdout.strip())
+            head = self._run_git("rev-parse", "HEAD").stdout.strip()
+            review.record_passed(self._run_git("merge-base", self._base_branch, head).stdout.strip(), head)
 
         risk = (review_result or {}).get("risk", {}).get("level")
         if self._auto_push and risk in self.PUSH_BLOCKED_RISK_LEVELS:

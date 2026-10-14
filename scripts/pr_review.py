@@ -224,12 +224,13 @@ def apply_actions(repo: str, number: int, info: dict, plan: dict):
 
 # ---------- 실행 ----------
 
-def _skip_reason(env: dict):
+def _skip_reason(env: dict) -> tuple:
+    """(건너뛰는 이유, exit code). 키가 없으면 실패로 끝내 required check가 리뷰 없이 통과하지 않게 한다."""
     if env.get("HEAD_REPO") != env.get("REPO"):
-        return "포크 PR은 시크릿에 접근할 수 없어 리뷰하지 않는다."
+        return "포크 PR은 시크릿에 접근할 수 없어 리뷰하지 않는다.", 0
     if not env.get("OPENAI_API_KEY"):
-        return "OPENAI_API_KEY가 설정되지 않았다."
-    return None
+        return "OPENAI_API_KEY가 설정되지 않았다. 저장소 secret을 등록하라.", 1
+    return None, 0
 
 
 def run_engine(base: str, gh_config: dict, *, focus: str = "", context: str = "") -> dict:
@@ -275,14 +276,14 @@ def main(argv=None, env=None) -> int:
     if args.dry_run and not args.result_file:
         parser.error("--dry-run에는 --result-file이 필요하다")
     repo, number = env.get("REPO", ""), int(env.get("PR_NUMBER", "0") or 0)
-    reason = None if args.dry_run else _skip_reason(env)
+    reason, skip_exit = (None, 0) if args.dry_run else _skip_reason(env)
     if reason:
         try:
             upsert_comment(repo, number, skip_comment(reason))
         except PrReviewError as err:
             # 포크 PR의 GITHUB_TOKEN은 읽기 전용이라 코멘트를 못 쓸 수 있다. 건너뛰기는 실패가 아니다.
             print(f"건너뜀({reason}), 코멘트 실패: {err}", file=sys.stderr)
-        return 0
+        return skip_exit
     try:
         return _review(args, env, repo, number)
     except (PrReviewError, review.ReviewError, config.ConfigError) as err:

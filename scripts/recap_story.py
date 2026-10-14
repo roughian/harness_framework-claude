@@ -50,7 +50,7 @@ def _risk_sentence(review: dict) -> str:
     return f"위험도 '{RISK_WORDS.get(risk.get('level'), risk.get('level'))}'({risk.get('score')}점): {reason}."
 
 
-def _review_sentences(review: Optional[dict], status: Optional[dict], now: datetime) -> list:
+def _review_sentences(review: Optional[dict], status: Optional[dict], now: datetime, in_phase: bool = True) -> list:
     if status and status.get("state") == "running":
         names = status.get("reviewers", [])
         line = f"다 만든 코드를 AI 검사관 {len(names)}명({', '.join(names)})이 살펴보는 중이에요"
@@ -65,8 +65,10 @@ def _review_sentences(review: Optional[dict], status: Optional[dict], now: datet
     blocking = [f for f in review.get("findings", []) if f.get("priority", 3) <= 1 and not f.get("pre_existing")]
     if review.get("blocking"):
         example = f" 예: '{blocking[0]['title']}'." if blocking else ""
-        return [f"검사관이 꼭 고쳐야 할 문제 {review['blocking']}개를 찾았어요.{example}",
-                "AI가 고치고 나면 고친 부분만 다시 검사해요(최대 2번)."]
+        found = f"검사관이 꼭 고쳐야 할 문제 {review['blocking']}개를 찾았어요.{example}"
+        # phase 안에서는 AI가 고치고 다시 검사한다. push·/review 리뷰는 사람이 고친다.
+        follow = "AI가 고치고 나면 고친 부분만 다시 검사해요(최대 2번)." if in_phase else "고친 뒤 다시 올리면 다시 검사해요."
+        return [found, follow]
     return [f"검사 통과! {_risk_sentence(review)}"]
 
 
@@ -113,9 +115,11 @@ def explain(phases: Optional[dict], index: Optional[dict], review: Optional[dict
     """리캡 맨 위에 쓸 쉬운 설명 줄 목록."""
     phase = _active_phase(phases or {})
     if phase is None:
-        return ["아직 시작한 작업이 없어요."]
+        # pre-push나 /review처럼 phase 밖에서 도는 리뷰도 보여 준다.
+        return _review_sentences(review, status, now, in_phase=False) or ["아직 시작한 작업이 없어요."]
     lines = _phase_sentences(phase, index or {}, now)
-    if phase.get("status") != "completed":
+    is_reviewing = bool(status and status.get("state") == "running")
+    if phase.get("status") != "completed" or is_reviewing:
         lines += _review_sentences(review, status, now)
     elif review:
         lines.append(_risk_sentence(review))

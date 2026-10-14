@@ -210,10 +210,11 @@ def test_fork_pr_skips_openai_and_exits_zero():
     assert any("issues/7/comments" in c for c in gh.joined())
 
 
-def test_missing_api_key_skips_openai():
+def test_missing_api_key_fails_without_reviewing():
+    # required check가 리뷰 없이 통과로 보이지 않게 실패로 끝낸다.
     env = {k: v for k, v in ENV.items() if k != "OPENAI_API_KEY"}
     code, _, call = _run([], env=env)
-    assert code == 0
+    assert code == 1
     call.assert_not_called()
 
 

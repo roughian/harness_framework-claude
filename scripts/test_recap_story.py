@@ -84,3 +84,23 @@ def test_lessons_warning_only_when_too_long():
     assert rs.lessons_warning("# LESSONS\n- [2026-10-14] 짧은 규칙\n") is None
     assert "51줄" in rs.lessons_warning("\n".join(f"- 규칙 {n}" for n in range(51)))
     assert "너무 긴 줄 1개" in rs.lessons_warning("- " + "가" * 400)
+
+
+def test_review_without_phase_is_still_explained():
+    # pre-push나 /review처럼 phase 밖에서 도는 리뷰도 보여야 한다.
+    status = {"state": "running", "mode": "first", "reviewers": ["claude", "codex"],
+              "started_at": "2026-10-14T12:15:00+0900"}
+    lines = rs.explain(None, None, None, status, NOW)
+    assert "AI 검사관 2명" in lines[0] and "5분째" in lines[0]
+
+
+def test_review_running_after_completed_phase_is_shown():
+    phases = {"phases": [{"dir": "1-http-engine", "status": "completed"}]}
+    status = {"state": "running", "mode": "first", "reviewers": ["codex"], "started_at": "2026-10-14T12:15:00+0900"}
+    lines = rs.explain(phases, _index(done=5), _review(), status, NOW)
+    assert lines[0].startswith("완료!") and "AI 검사관 1명" in lines[1]
+
+
+def test_finished_review_without_phase_shows_result():
+    lines = rs.explain(None, None, _review(blocking=1), {"state": "done"}, NOW)
+    assert "꼭 고쳐야 할 문제 1개" in lines[0]

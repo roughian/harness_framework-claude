@@ -44,6 +44,7 @@ def _isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(rv, "resolve_commit", lambda ref: HEAD_SHA)
     monkeypatch.setattr(rv, "is_worktree_clean", lambda: True)
     monkeypatch.setattr(rv, "changed_lines", lambda diff_range: {"src/big.ts": 500})
+    monkeypatch.setattr(rv, "merge_base", lambda a, b: "b" * 40)
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +421,7 @@ class TestVerifyReview:
     def test_only_reviewers_that_found_blocking_issues_rerun(self, tmp_path):
         work = tmp_path / "w"
         work.mkdir()
-        runner, seen = _writer(work, {"codex": _result()})
+        runner, seen = _writer(work, {"codex": {**_result(), "resolved": [1]}})
         with patch.object(rv, "run_local", side_effect=runner):
             merged = rv.run_review("main", tmp_path / "r.json", config=self.CONFIG, work_dir=work,
                                    previous=self._previous())
@@ -437,6 +438,20 @@ class TestVerifyReview:
                                    previous=self._previous())
         assert merged["risk"]["score"] == 40
 
+    def test_unresolved_previous_finding_is_carried_even_if_omitted(self, tmp_path):
+        # 검증 리뷰어가 남은 지적을 다시 적지 않아도, 해결로 확인하지 않았으면 차단이 이어진다.
+        work = tmp_path / "w"
+        work.mkdir()
+        runner, _ = _writer(work, {"codex": {**_result(), "resolved": []}})
+        with patch.object(rv, "run_local", side_effect=runner):
+            merged = rv.run_review("main", tmp_path / "r.json", config=self.CONFIG, work_dir=work,
+                                   previous=self._previous())
+        assert merged["blocking"] == 1
+        assert merged["findings"][0]["title"] == "race in cache" and merged["findings"][0]["carried"]
+
+    def test_verify_prompt_numbers_previous_findings(self):
+        assert "[1] P1" in rv.build_verify_prompt(self._previous())
+
 
 class TestStatusAndCache:
     CONFIG = {"roles": {"reviewers": [CLAUDE_REVIEWER, CODEX_REVIEWER]}, "timeouts_sec": {"step": 1, "review": 1}}
@@ -448,7 +463,7 @@ class TestStatusAndCache:
         with patch.object(rv, "run_local", side_effect=runner):
             merged = rv.run_review("main", tmp_path / "r.json", config=self.CONFIG, work_dir=work)
         assert merged["head"] == HEAD_SHA
-        assert rv.is_passed(HEAD_SHA)
+        assert rv.is_passed("b" * 40, HEAD_SHA)
         status = json.loads(rv.STATUS_FILE.read_text())
         assert status["state"] == "done" and status["mode"] == "first" and status["blocking"] == 0
 
@@ -458,7 +473,7 @@ class TestStatusAndCache:
         runner, _ = _writer(work, {"codex": _result([_finding(priority=0)])})
         with patch.object(rv, "run_local", side_effect=runner):
             rv.run_review("main", tmp_path / "r.json", config=self.CONFIG, work_dir=work, only=["codex"])
-        assert not rv.is_passed(HEAD_SHA)
+        assert not rv.is_passed("b" * 40, HEAD_SHA)
 
     def test_dirty_worktree_is_not_cached(self, tmp_path, monkeypatch):
         monkeypatch.setattr(rv, "is_worktree_clean", lambda: False)
@@ -467,7 +482,7 @@ class TestStatusAndCache:
         runner, _ = _writer(work, {"codex": _result()})
         with patch.object(rv, "run_local", side_effect=runner):
             rv.run_review("main", tmp_path / "r.json", config=self.CONFIG, work_dir=work, only=["codex"])
-        assert not rv.is_passed(HEAD_SHA)
+        assert not rv.is_passed("b" * 40, HEAD_SHA)
 
     def test_own_work_dir_is_removed(self, tmp_path):
         def runner(commands, timeout_sec):

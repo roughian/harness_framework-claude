@@ -729,7 +729,7 @@ class TestVerifyReview:
 
     def test_finalize_records_head_as_passed(self, executor, git_log):
         executor._finalize(_merged())
-        assert ex.review.is_passed("abc1234")
+        assert ex.review.is_passed("abc1234", "abc1234")
 
 
 class TestHeaderModelSelection:

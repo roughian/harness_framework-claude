@@ -81,6 +81,10 @@ def resolve_commit(ref: str) -> str:
     return _git("rev-parse", f"{ref}^{{commit}}").strip()
 
 
+def merge_base(a: str, b: str) -> str:
+    return _git("merge-base", a, b).strip()
+
+
 def is_worktree_clean() -> bool:
     return not _git("status", "--porcelain").strip()
 
@@ -119,16 +123,17 @@ def build_prompt(base: str, *, head: Optional[str] = None, focus: str = "", cont
         "1. REVIEW.md(리뷰 기준, 특히 '지적하지 말 것')와 CLAUDE.md를 읽어라. docs/LESSONS.md는 전체를 읽지 말고 "
         "변경 파일·영역 이름으로 grep해 관련 줄만 읽어라. 구조나 기술 스택을 바꾸는 변경이면 "
         "docs/ARCHITECTURE.md와 docs/ADR.md도 읽어라.",
-        f"2. `{diff}`로 변경을 확인하라. 필요하면 변경 파일 전체를 읽어 맥락을 확인하라.{read_hint}",
+        f"2. `{diff}`" + ("" if head else "와 `git status --short`(아직 커밋하지 않은 새 파일)") +
+        f"로 변경을 확인하라. 필요하면 변경 파일 전체를 읽어 맥락을 확인하라.{read_hint}",
         "3. REVIEW.md의 심각도(P0-P3), 체크리스트, Risk Score 기준을 그대로 적용하라.",
         "4. 이 diff가 새로 만든 문제만 지적하라. 기존 문제는 pre_existing=true로 표시하라.",
         "5. 머지를 막을 문제를 먼저 찾아라. 지적마다 왜 틀렸는지(body)와 실패를 보이는 방법(repro: 테스트·명령·입력)을 적어라.",
         "6. 코드나 실행으로 직접 확인한 지적만 confirmed=true로 하라. 추정이면 confirmed=false로 두고, "
         "summary에 어디까지 확인했는지 적어라.",
-        "7. 결과는 주어진 JSON 스키마 형식 하나로만 출력하라.",
+        "7. 결과는 주어진 JSON 스키마 형식 하나로만 출력하라. 첫 리뷰이므로 resolved는 빈 배열로 둔다.",
     ]
     if focus:
-        parts.append(f"\n이번 리뷰는 {focus} 관점만 집중해서 본다.")
+        parts.append(f"\n집중 영역: {focus}")
     if context:
         parts.append(f"\n참고 정보:\n{context}")
     return "\n".join(parts) + "\n"
@@ -137,16 +142,17 @@ def build_prompt(base: str, *, head: Optional[str] = None, focus: str = "", cont
 def build_verify_prompt(previous: dict) -> str:
     """검증 리뷰: 이전 차단 지적이 고쳐졌는지, 수정이 새 문제를 만들었는지만 본다."""
     items = "\n".join(
-        f"- [P{f['priority']}] {f['file']}:{f['line_start']}-{f['line_end']} {f['title']} — {f['body']}"
+        f"[{n}] P{f['priority']} {f['file']}:{f['line_start']}-{f['line_end']} {f['title']} — {f['body']}"
         + (f" (재현: {f['repro']})" if f.get("repro") else "")
-        for f in blocking_findings(previous)
+        for n, f in enumerate(blocking_findings(previous), 1)
     )
     return (
         "너는 이전 리뷰의 차단 지적이 고쳐졌는지 확인한다. 코드를 수정하지 마라. 전체를 다시 리뷰하지 마라.\n\n"
         f"## 이전 차단 지적\n\n{items}\n\n"
         "1. REVIEW.md(특히 '지적하지 말 것')를 읽어라.\n"
         f"2. `git diff {previous['head']}`로 그 뒤의 수정만 확인하라.\n"
-        "3. 아직 남은 이전 지적은 같은 위치·등급으로 findings에 다시 넣어라. 고쳐졌으면 넣지 마라.\n"
+        "3. 고쳐졌음을 확인한 이전 지적의 번호만 resolved에 넣어라. 확인하지 못했거나 남은 지적은 resolved에 넣지 마라"
+        "(넣지 않은 지적은 그대로 차단으로 이어진다). 남은 지적은 같은 위치·등급으로 findings에도 다시 넣어라.\n"
         "4. 위 수정 diff가 새로 만든 P0/P1만 새 지적으로 추가하라. 수정 diff 밖의 문제는 지적하지 마라.\n"
         "5. 결과는 주어진 JSON 스키마 형식 하나로만 출력하라.\n"
     )
@@ -311,15 +317,27 @@ def write_status(status: dict):
     _write_json_atomic(STATUS_FILE, status)
 
 
-def is_passed(sha: str) -> bool:
-    return PASSED_FILE.exists() and sha in PASSED_FILE.read_text().split()
+def is_ancestor(ancestor: str, descendant: str) -> bool:
+    r = subprocess.run(["git", "merge-base", "--is-ancestor", ancestor, descendant], cwd=ROOT, capture_output=True)
+    return r.returncode == 0
 
 
-def record_passed(sha: str):
-    if not is_passed(sha):
+def is_passed(base: str, head: str) -> bool:
+    """base..head 범위가 이미 통과한 리뷰 범위 안에 있는가. 기록은 '리뷰 기준 커밋 head' 한 줄씩이다."""
+    if not PASSED_FILE.exists():
+        return False
+    for line in PASSED_FILE.read_text().splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1] == head and (parts[0] == base or is_ancestor(parts[0], base)):
+            return True
+    return False
+
+
+def record_passed(base: str, head: str):
+    if not is_passed(base, head):
         PASSED_FILE.parent.mkdir(parents=True, exist_ok=True)
         with PASSED_FILE.open("a") as f:
-            f.write(sha + "\n")
+            f.write(f"{base} {head}\n")
 
 
 # ---------- 실행 ----------
@@ -334,6 +352,21 @@ def _select(config: dict, base: str, head: Optional[str], previous: Optional[dic
         found = {n for f in blocking_findings(previous) for n in f.get("found_by", [])}
         return [n for n in names if n in found] or names
     return choose_reviewers(config, changed_lines(f"{base}...{head}" if head else base))
+
+
+def carry_unresolved(merged: dict, previous: dict, results: dict) -> dict:
+    """검증 리뷰어가 모두 해결로 확인하지 않은 이전 차단 지적을 결과에 이어 붙인다.
+
+    리뷰어가 남은 지적을 다시 적는 것을 빠뜨려도 미수정 P0/P1이 통과하지 않게 한다.
+    """
+    resolved_sets = [set(r.get("resolved", [])) for r in results.values()]
+    resolved = set.intersection(*resolved_sets) if resolved_sets else set()
+    findings = list(merged["findings"])
+    for n, f in enumerate(blocking_findings(previous), 1):
+        if n not in resolved and not any(_overlaps(f, m) for m in findings):
+            findings.append({**f, "carried": True})
+    findings.sort(key=lambda f: (f["priority"], f["file"], f["line_start"]))
+    return {**merged, "findings": findings, "blocking": sum(1 for f in findings if _is_blocking(f))}
 
 
 def _run_reviewers(reviewers: dict, prompt: str, timeout_sec: int, work_dir: Optional[Path]) -> tuple:
@@ -383,13 +416,15 @@ def run_review(base: str, out: Path, *, config: Optional[dict] = None, work_dir:
         raise ReviewError(f"모든 리뷰어 실패: {failed}")
 
     merged = {"base": base, "head": reviewed_head, "mode": mode, **merge(results, failed)}
-    if previous and previous["risk"]["score"] > merged["risk"]["score"]:
-        merged["risk"] = previous["risk"]  # 검증 리뷰는 수정분만 보므로 위험도는 첫 리뷰 값을 유지한다
+    if previous:
+        merged = carry_unresolved(merged, previous, results)
+        if previous["risk"]["score"] > merged["risk"]["score"]:
+            merged["risk"] = previous["risk"]  # 검증 리뷰는 수정분만 보므로 위험도는 첫 리뷰 값을 유지한다
     _write_json_atomic(out, merged)
     write_status({**status, "state": "done", "finished_at": _now(), "blocking": merged["blocking"]})
     # 통과한 커밋은 pre-push가 다시 리뷰하지 않는다. 커밋되지 않은 변경이 섞였으면 기록하지 않는다.
     if not merged["blocking"] and (head or is_worktree_clean()):
-        record_passed(reviewed_head)
+        record_passed(merge_base(base, reviewed_head), reviewed_head)
     return merged
 
 
@@ -437,11 +472,13 @@ def main():
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="병합 결과 JSON 경로")
     parser.add_argument("--reviewers", help="쉼표로 구분한 리뷰어 이름 (기본: 변경 크기로 자동 선택)")
     parser.add_argument("--head", help="base...HEAD 커밋 범위만 리뷰 (pre-push)")
+    parser.add_argument("--previous", type=Path, help="이 결과의 차단 지적만 검증한다(수정분만 리뷰)")
     args = parser.parse_args()
 
     only = args.reviewers.split(",") if args.reviewers else None
+    previous = json.loads(args.previous.read_text(encoding="utf-8")) if args.previous else None
     try:
-        merged = run_review(args.base, args.out, only=only, head=args.head)
+        merged = run_review(args.base, args.out, only=only, head=args.head, previous=previous)
     except (ReviewError, cfg.ConfigError) as err:
         print(f"ERROR: {err}", file=sys.stderr)
         sys.exit(EXIT_ALL_FAILED)

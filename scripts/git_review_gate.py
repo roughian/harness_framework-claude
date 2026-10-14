@@ -3,13 +3,15 @@
 git pre-push 리뷰 게이트 — .githooks/pre-push가 부른다.
 
 push 범위를 review.py로 리뷰하고, 차단 지적이 있거나(exit 3, 규칙은 REVIEW.md) 리뷰어가 모두 실패하면(exit 1) 막는다.
-이미 통과한 커밋(.review/passed, execute.py 게이트나 이전 push가 기록)은 다시 리뷰하지 않는다.
+이미 통과한 범위(.review/passed, execute.py 게이트나 이전 push가 기록)는 다시 리뷰하지 않는다.
+직전 push 리뷰가 같은 범위에서 막혔다면 전체를 다시 보지 않고 그 지적과 수정분만 검증한다.
 로컬 게이트는 실수로 리뷰를 건너뛰는 것을 막는 장치다. 진짜 강제는 PR required check가 한다.
 
 Usage:
     python3 scripts/git_review_gate.py pre-push < <git이 주는 ref 목록>
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -48,9 +50,30 @@ def _push_base(local_sha: str, remote_sha: str) -> str:
     return ""
 
 
+def _previous_review(base: str, head: str):
+    """같은 범위에서 막힌 직전 리뷰 결과 경로. 있으면 검증 리뷰로 돈다."""
+    if not review.DEFAULT_OUT.exists():
+        return None
+    try:
+        previous = json.loads(review.DEFAULT_OUT.read_text(encoding="utf-8"))
+    except ValueError:
+        return None
+    is_same_range = previous.get("base") == base and previous.get("head")
+    if previous.get("blocking") and is_same_range and review.is_ancestor(previous["head"], head):
+        return review.DEFAULT_OUT
+    return None
+
+
 def _review(base: str, head: str) -> int:
     """review.py를 실행하고, 차단해야 하면 사유를 출력한 뒤 EXIT_BLOCK을 돌려준다."""
-    r = subprocess.run([sys.executable, str(REVIEW_SCRIPT), "--base", base, "--head", head], cwd=ROOT)
+    cmd = [sys.executable, str(REVIEW_SCRIPT), "--base", base, "--head", head]
+    previous = _previous_review(base, head)
+    if previous:
+        # review.py가 결과를 같은 파일에 다시 쓰므로 이전 결과를 따로 복사해 넘긴다.
+        snapshot = previous.with_name("previous.json")
+        snapshot.write_text(previous.read_text(encoding="utf-8"), encoding="utf-8")
+        cmd += ["--previous", str(snapshot)]
+    r = subprocess.run(cmd, cwd=ROOT)
     if r.returncode == 0:
         return 0
     reason = "차단 지적" if r.returncode == review.EXIT_BLOCKING else "리뷰 실행 실패"
@@ -67,8 +90,6 @@ def pre_push(refs: str) -> int:
         if len(parts) != 4 or parts[1] == ZERO_SHA:
             continue
         local_sha = _commit_of(parts[1])
-        if review.is_passed(local_sha):
-            continue
         base = _push_base(local_sha, parts[3])
         if not base:
             # 리뷰 범위를 정하지 못했다고 통과시키면 게이트가 열린다.
@@ -76,7 +97,7 @@ def pre_push(refs: str) -> int:
                   f"({' / '.join(BASE_CANDIDATES)}와의 merge-base 없음). 기준 브랜치를 fetch한 뒤 다시 push하세요.",
                   file=sys.stderr)
             return EXIT_BLOCK
-        if base == local_sha:
+        if base == local_sha or review.is_passed(base, local_sha):
             continue
         if _review(base, local_sha):
             return EXIT_BLOCK
