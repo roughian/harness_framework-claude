@@ -129,6 +129,14 @@ def test_finish_pr_uses_pr_remote_everywhere():
     assert review_for.call_args.args == (HEAD, "main", "fork")
 
 
+def test_remote_for_matches_fetch_url_only():
+    # 비교 범위는 fetch한 이력이므로 push 주소만 그 저장소를 가리키는 원격은 고르지 않는다.
+    listing = ("mirror\thttps://github.com/up/r.git (fetch)\nmirror\thttps://github.com/o/r.git (push)\n"
+               "fork\thttps://github.com/o/r.git (fetch)\nfork\thttps://github.com/o/r.git (push)\n")
+    with patch.object(pr.review, "_git", return_value=listing):
+        assert pr.remote_for("o/r") == "fork"
+
+
 def test_remote_for_unknown_repo_is_an_error():
     with patch.object(pr.review, "_git", return_value="origin\thttps://github.com/up/r.git (fetch)\n"):
         with pytest.raises(pr.PrReviewError):

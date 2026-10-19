@@ -58,7 +58,9 @@ def remote_for(repo: str) -> str:
     """repo(owner/name)를 가리키는 git 원격 이름. fork에 연 PR은 origin이 아닐 수 있다."""
     wanted = repo.lower()  # GitHub 저장소 이름은 대소문자를 구분하지 않는다
     for row in review._git("remote", "-v").splitlines():
-        name, url = row.split()[:2]
+        name, url, kind = row.split()[:3]
+        if kind != "(fetch)":  # 비교 범위는 fetch한 이력이다
+            continue
         path = url.lower().removesuffix(".git")
         if path.endswith(f"/{wanted}") or path.endswith(f":{wanted}"):
             return name
