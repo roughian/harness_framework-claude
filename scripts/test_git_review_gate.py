@@ -71,6 +71,13 @@ def test_rebased_branch_reviews_from_main_not_old_remote_head():
     assert review[review.index("--base") + 1] == "c" * 40
 
 
+def test_amended_main_push_is_still_reviewed():
+    # main 자체를 amend해 push하면 main과의 merge-base가 새 HEAD다. 그대로 쓰면 빈 범위라 리뷰 없이 통과한다.
+    refs = f"refs/heads/main {LOCAL} refs/heads/main {REMOTE}\n"
+    _, (review,) = _push(refs, is_ancestor=False, merge_bases={"main": LOCAL, "origin/main": LOCAL, REMOTE: "d" * 40})
+    assert review[review.index("--base") + 1] == "d" * 40
+
+
 def test_already_passed_range_is_not_reviewed_again():
     # execute.py 게이트나 이전 push가 통과시킨 범위는 다시 리뷰하지 않는다.
     gate.review.record_passed(REMOTE, LOCAL)

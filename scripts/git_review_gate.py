@@ -48,8 +48,13 @@ def _push_base(local_sha: str, remote_sha: str) -> str:
         return remote
     for candidate in BASE_CANDIDATES:
         r = _git("merge-base", local_sha, candidate)
-        if r.returncode == 0 and r.stdout.strip():
-            return r.stdout.strip()
+        found = r.stdout.strip() if r.returncode == 0 else ""
+        # main 자체를 amend·rebase해 push하면 merge-base가 새 HEAD라 범위가 비어 리뷰 없이 통과한다.
+        if found and not (remote and found == local_sha):
+            return found
+    if remote:
+        r = _git("merge-base", local_sha, remote)
+        return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else remote
     return ""
 
 
