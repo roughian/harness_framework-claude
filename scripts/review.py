@@ -224,6 +224,8 @@ def reviewer_command(reviewer: dict, prompt_file: Path, raw_file: Path) -> str:
         return (
             f"claude -p {args} --output-format json "
             f"--json-schema \"$(cat {q(str(SCHEMA_FILE))})\" "
+            # --allowedTools는 묻지 않고 허락할 목록일 뿐이다. 사용자 설정이 auto 모드면 그 밖의 명령도 돈다.
+            f"--tools Read,Grep,Glob,Bash --permission-mode dontAsk "
             f"--allowedTools {q(CLAUDE_READ_ONLY_TOOLS)} "
             f"< {q(str(prompt_file))} > {q(str(raw_file))}"
         )

@@ -13,3 +13,4 @@
 - [2026-10-12] `gh api --paginate` 결과는 `--jq`로 한 줄씩 뽑아 쓴다. 원인: 페이지마다 배열이 따로 출력되어, 코멘트가 30개를 넘으면 `json.loads`가 실패함 (출처: session) [키: gh api, scripts/pr_review.py]
 - [2026-10-13] push·phase를 막는 게이트를 넣을 때는 같은 명령을 쓰는 자동화 경로(execute.py push 등)에 건너뛰기 경로를 함께 둔다. 원인: 새 리뷰 게이트가 자동화 커밋을 막아 phase 실행이 실패할 뻔함 (출처: review) [키: .githooks/, scripts/git_review_gate.py]
 - [2026-10-14] 로컬 리뷰 게이트는 실수로 건너뛰는 것만 막고(의도적 우회는 범위 밖, AI Review 체크는 표시용), 리뷰는 첫 리뷰 뒤 수정분만 검증한다. 원인: 우회 방지를 계속 보강하자 리뷰가 매번 새 지적 10건을 내며 수렴하지 않았고, 매번 전체 재리뷰로 phase 시간의 절반이 리뷰에 들었다 (출처: session) [키: scripts/review.py, scripts/git_review_gate.py, .githooks/]
+- [2026-10-19] `claude -p`를 읽기 전용으로 돌릴 때는 `--allowedTools`만 믿지 말고 `--tools`(쓰기 도구 제거)와 `--permission-mode dontAsk`를 함께 준다. 원인: 사용자 설정이 auto 모드라 리뷰어가 허용 목록 밖의 pytest 실행·임시 폴더 생성과 삭제까지 시도함 (출처: session) [키: claude -p, allowedTools, scripts/review.py]

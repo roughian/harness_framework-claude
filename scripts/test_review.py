@@ -185,6 +185,12 @@ class TestReviewerCommand:
         assert "--allowedTools" in cmd
         assert "dangerously" not in cmd
 
+    def test_claude_denies_tools_outside_allow_list(self, tmp_path):
+        # 사용자 설정이 auto 모드면 --allowedTools 밖의 명령(pytest, rm)도 승인된다. 쓰기 도구는 아예 빼고 나머지는 거부한다.
+        cmd = rv.reviewer_command(CLAUDE_REVIEWER, tmp_path / "p.md", tmp_path / "r.json")
+        assert "--permission-mode dontAsk" in cmd
+        assert "--tools Read,Grep,Glob,Bash" in cmd
+
     def test_codex_uses_read_only_sandbox_and_schema(self, tmp_path):
         cmd = rv.reviewer_command(CODEX_REVIEWER, tmp_path / "p.md", tmp_path / "r.json")
         assert cmd.startswith("codex exec")
