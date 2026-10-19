@@ -26,7 +26,9 @@ import review
 
 ROOT = Path(__file__).resolve().parent.parent
 SELECTION_MAX_AGE_DAYS = 7
-LIMIT_PATTERN = re.compile(r"usage limit|limit reached|rate.?limit|\b429\b", re.IGNORECASE)
+LIMIT_PATTERN = re.compile(
+    r"usage limit|limit reached|rate.?limit|\b429\b|(?:hit|reached) your [\w-]+(?: [\w-]+)? limit", re.IGNORECASE
+)
 
 
 def is_usage_limited(output: dict) -> bool:
