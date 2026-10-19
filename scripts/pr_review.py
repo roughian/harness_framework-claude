@@ -54,12 +54,26 @@ def load_github_config() -> dict:
         return {}
 
 
-def review_for(head: str, base_ref: str) -> dict:
+def remote_for(repo: str) -> str:
+    """repo(owner/name)를 가리키는 git 원격 이름. fork에 연 PR은 origin이 아닐 수 있다."""
+    for row in review._git("remote", "-v").splitlines():
+        name, url = row.split()[:2]
+        if url.removesuffix(".git").endswith(f"/{repo}") or url.removesuffix(".git").endswith(f":{repo}"):
+            return name
+    raise PrReviewError(f"{repo}를 가리키는 git 원격이 없습니다. `git remote add <이름> <URL>`로 추가하세요.")
+
+
+def fetch_base(remote: str, base_ref: str):
+    """PR 기준 브랜치를 최신으로 맞춘다. 오래된 원격 추적 브랜치로 비교하면 범위가 틀린다."""
+    review._git("fetch", "-q", remote, base_ref)
+
+
+def review_for(head: str, base_ref: str, remote: str = "origin") -> dict:
     """push 때 남긴 이 커밋의 리뷰 결과. PR 전체 범위를 본 기록이 아니면 지금 리뷰한다.
 
     이미 있는 브랜치에 push하면 그 push분만 리뷰하므로, 그 기록을 PR 전체 결과로 쓰면 앞 push의 위험이 빠진다.
     """
-    pr_base = f"origin/{base_ref}"
+    pr_base = f"{remote}/{base_ref}"
     result = review.load_result(head)
     if result is not None and review.merge_base(result["base"], head) == review.merge_base(pr_base, head):
         return result
@@ -195,9 +209,11 @@ def apply_actions(repo: str, number: int, info: dict, plan: dict):
 def finish_pr(repo: str, number: int) -> int:
     info = json.loads(gh(["pr", "view", str(number), "-R", repo, "--json", "body,labels,headRefOid,baseRefName"]))
     head, base = info["headRefOid"], info["baseRefName"]
-    lines = review.changed_lines(f"origin/{base}...{head}")
+    remote = remote_for(repo)
+    fetch_base(remote, base)
+    lines = review.changed_lines(f"{remote}/{base}...{head}")
     stats = (len(lines), sum(lines.values()))
-    merged = apply_scope(review_for(head, base), *stats)
+    merged = apply_scope(review_for(head, base, remote), *stats)
     plan = plan_actions(merged["risk"]["level"], merged, info.get("body") or "", load_github_config())
     apply_actions(repo, number, info, plan)
     upsert_comment(repo, number, build_comment(merged, plan, stats))
