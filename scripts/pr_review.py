@@ -56,9 +56,11 @@ def load_github_config() -> dict:
 
 def remote_for(repo: str) -> str:
     """repo(owner/name)를 가리키는 git 원격 이름. fork에 연 PR은 origin이 아닐 수 있다."""
+    wanted = repo.lower()  # GitHub 저장소 이름은 대소문자를 구분하지 않는다
     for row in review._git("remote", "-v").splitlines():
         name, url = row.split()[:2]
-        if url.removesuffix(".git").endswith(f"/{repo}") or url.removesuffix(".git").endswith(f":{repo}"):
+        path = url.lower().removesuffix(".git")
+        if path.endswith(f"/{wanted}") or path.endswith(f":{wanted}"):
             return name
     raise PrReviewError(f"{repo}를 가리키는 git 원격이 없습니다. `git remote add <이름> <URL>`로 추가하세요.")
 
@@ -68,7 +70,7 @@ def fetch_base(remote: str, base_ref: str):
     review._git("fetch", "-q", remote, base_ref)
 
 
-def review_for(head: str, base_ref: str, remote: str = "origin") -> dict:
+def review_for(head: str, base_ref: str, remote: str) -> dict:
     """push 때 남긴 이 커밋의 리뷰 결과. PR 전체 범위를 본 기록이 아니면 지금 리뷰한다.
 
     이미 있는 브랜치에 push하면 그 push분만 리뷰하므로, 그 기록을 PR 전체 결과로 쓰면 앞 push의 위험이 빠진다.

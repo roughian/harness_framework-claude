@@ -81,7 +81,7 @@ def _archive(tmp_path, monkeypatch, base):
 def test_reuses_review_recorded_at_push(tmp_path, monkeypatch):
     _archive(tmp_path, monkeypatch, base="m")
     with patch.object(rv, "run_review") as run:
-        assert pr.review_for(HEAD, "main")["blocking"] == 0
+        assert pr.review_for(HEAD, "main", "origin")["blocking"] == 0
     run.assert_not_called()
 
 
@@ -89,7 +89,7 @@ def test_record_of_later_push_only_is_not_reused(tmp_path, monkeypatch):
     # 이미 있는 브랜치에 push하면 그 push분만 리뷰된다. PR 전체 위험이 빠지므로 PR 범위를 다시 리뷰한다.
     _archive(tmp_path, monkeypatch, base="p" * 40)
     with patch.object(rv, "run_review", return_value="fresh") as run:
-        assert pr.review_for(HEAD, "main") == "fresh"
+        assert pr.review_for(HEAD, "main", "origin") == "fresh"
     assert run.call_args.args[0] == "origin/main"
 
 
@@ -108,6 +108,27 @@ def test_remote_for_finds_remote_pointing_at_repo(url):
         assert pr.remote_for("o/r") == "fork"
 
 
+def test_remote_for_ignores_case_like_github():
+    listing = "fork\thttps://github.com/Roughian/Harness.git (fetch)\n"
+    with patch.object(pr.review, "_git", return_value=listing):
+        assert pr.remote_for("roughian/harness") == "fork"
+
+
+def test_finish_pr_uses_pr_remote_everywhere():
+    gh = FakeGh()
+    with patch.object(pr, "gh", gh), \
+         patch.object(pr, "load_github_config", return_value=GH_CONFIG), \
+         patch.object(pr, "remote_for", return_value="fork") as remote_for, \
+         patch.object(pr, "fetch_base") as fetch, \
+         patch.object(pr.review, "changed_lines", return_value={"a.py": 10}) as lines, \
+         patch.object(pr, "review_for", return_value=_merged()) as review_for:
+        pr.finish_pr("o/r", 7)
+    remote_for.assert_called_once_with("o/r")
+    fetch.assert_called_once_with("fork", "main")
+    assert lines.call_args.args[0] == f"fork/main...{HEAD}"
+    assert review_for.call_args.args == (HEAD, "main", "fork")
+
+
 def test_remote_for_unknown_repo_is_an_error():
     with patch.object(pr.review, "_git", return_value="origin\thttps://github.com/up/r.git (fetch)\n"):
         with pytest.raises(pr.PrReviewError):
@@ -117,7 +138,7 @@ def test_remote_for_unknown_repo_is_an_error():
 def test_reviews_now_only_when_no_record(tmp_path, monkeypatch):
     monkeypatch.setattr(rv, "RESULTS_DIR", tmp_path)
     with patch.object(rv, "run_review", return_value="fresh") as run:
-        assert pr.review_for(HEAD, "main") == "fresh"
+        assert pr.review_for(HEAD, "main", "origin") == "fresh"
     assert run.call_args.args[0] == "origin/main" and run.call_args.kwargs["head"] == HEAD
 
 
