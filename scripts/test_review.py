@@ -191,6 +191,10 @@ class TestReviewerCommand:
         assert "--permission-mode dontAsk" in cmd
         assert "--tools Read,Grep,Glob,Bash" in cmd
 
+    def test_tool_names_come_from_allow_list(self):
+        # --tools와 --allowedTools가 따로 적히면 한쪽만 고쳐 어긋난다. 허용 목록에서 이름만 뽑는다.
+        assert rv.tool_names("Read,Bash(git diff:*),Bash(git log:*),Grep") == "Read,Bash,Grep"
+
     def test_codex_uses_read_only_sandbox_and_schema(self, tmp_path):
         cmd = rv.reviewer_command(CODEX_REVIEWER, tmp_path / "p.md", tmp_path / "r.json")
         assert cmd.startswith("codex exec")

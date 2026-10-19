@@ -216,6 +216,11 @@ def build_verify_prompt(previous: dict, head: Optional[str] = None) -> str:
     )
 
 
+def tool_names(allow_list: str) -> str:
+    """허용 목록("Bash(git diff:*)" 등)에서 도구 이름만 순서대로 중복 없이 뽑는다."""
+    return ",".join(dict.fromkeys(t.split("(")[0] for t in allow_list.split(",")))
+
+
 def reviewer_command(reviewer: dict, prompt_file: Path, raw_file: Path) -> str:
     """리뷰어 하나를 읽기 전용으로 실행하는 셸 명령."""
     q = shlex.quote
@@ -225,7 +230,7 @@ def reviewer_command(reviewer: dict, prompt_file: Path, raw_file: Path) -> str:
             f"claude -p {args} --output-format json "
             f"--json-schema \"$(cat {q(str(SCHEMA_FILE))})\" "
             # --allowedTools는 묻지 않고 허락할 목록일 뿐이다. 사용자 설정이 auto 모드면 그 밖의 명령도 돈다.
-            f"--tools Read,Grep,Glob,Bash --permission-mode dontAsk "
+            f"--tools {tool_names(CLAUDE_READ_ONLY_TOOLS)} --permission-mode dontAsk "
             f"--allowedTools {q(CLAUDE_READ_ONLY_TOOLS)} "
             f"< {q(str(prompt_file))} > {q(str(raw_file))}"
         )
