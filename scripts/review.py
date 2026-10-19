@@ -116,18 +116,33 @@ def changed_lines(diff_range: str) -> dict:
 
 # ---------- LESSONS ----------
 
-def relevant_lessons(texts: list, path: Optional[Path] = None) -> list:
+def match_lessons(lessons_text: str, texts: list) -> list:
     """`[키: a, b]`의 키 하나라도 texts 어딘가에 들어 있는 LESSONS 줄. 손으로 옮겨 적지 않아도 전달되게 한다."""
-    path = path or LESSONS_FILE
-    if not path.exists():
-        return []
     found = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in lessons_text.splitlines():
         match = LESSON_KEYS.search(line) if line.startswith("- [") else None
         keys = [k.strip() for k in match.group(1).split(",") if k.strip()] if match else []
         if any(k in text for k in keys for text in texts):
             found.append(line)
     return found
+
+
+def relevant_lessons(texts: list, path: Optional[Path] = None) -> list:
+    path = path or LESSONS_FILE
+    return match_lessons(path.read_text(encoding="utf-8"), texts) if path.exists() else []
+
+
+def review_lessons(base: str, head: Optional[str]) -> list:
+    """리뷰 대상과 관련된 LESSONS 줄. 커밋 리뷰는 그 커밋의 LESSONS를, 작업 트리 리뷰는 새 파일 경로까지 본다."""
+    texts = [_git("diff", review_range(base, head))]
+    if head is None:
+        texts.append(_git("ls-files", "--others", "--exclude-standard"))
+        return relevant_lessons(texts)
+    try:
+        lessons_text = _git("show", f"{head}:docs/LESSONS.md")
+    except ReviewError:  # 그 커밋에 LESSONS가 없으면 전달할 규칙도 없다
+        return []
+    return match_lessons(lessons_text, texts)
 
 
 def lessons_section(heading: str, lessons: list) -> str:
@@ -461,9 +476,8 @@ def run_review(base: str, out: Path, *, config: Optional[dict] = None, work_dir:
     if previous:
         prompt = build_verify_prompt(previous, head)
     else:
-        paths = list(changed_lines(review_range(base, head)))
         prompt = build_prompt(base, head=head, intent=tuple(commit_subjects(base, head)),
-                              lessons=tuple(relevant_lessons(paths)))
+                              lessons=tuple(review_lessons(base, head)))
     results, failed = _run_reviewers(reviewers, prompt, config["timeouts_sec"]["review"], work_dir)
     if not results:
         write_status({**status, "state": "failed", "finished_at": _now()})

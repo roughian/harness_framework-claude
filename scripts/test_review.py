@@ -11,6 +11,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 import review as rv
 
+REAL_REVIEW_LESSONS = rv.review_lessons  # autouse가 막아 두므로 TestReviewLessons가 원본을 쓴다
+
 
 def _finding(file="src/a.ts", start=10, end=12, priority=1, pre_existing=False, title="bug",
              confirmed=True, repro="npm test -- a"):
@@ -48,6 +50,7 @@ def _isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(rv, "merge_base", lambda a, b: "b" * 40)
     monkeypatch.setattr(rv, "commit_subjects", lambda base, head: [])
     monkeypatch.setattr(rv, "LESSONS_FILE", tmp_path / "LESSONS.md")
+    monkeypatch.setattr(rv, "review_lessons", lambda base, head: [])
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +105,7 @@ class TestBuildPrompt:
         assert "grep" not in prompt
 
     def test_run_review_passes_intent_and_lessons(self, tmp_path, monkeypatch):
-        (tmp_path / "LESSONS.md").write_text("- [2026-10-10] 큰 파일 규칙 [키: src/big]\n")
+        monkeypatch.setattr(rv, "review_lessons", lambda base, head: ["- [2026-10-10] 큰 파일 규칙 [키: src/big]"])
         monkeypatch.setattr(rv, "commit_subjects", lambda base, head: ["feat: big change"])
         seen = {}
         def fake_run(reviewers, prompt, timeout, work_dir):
@@ -142,6 +145,31 @@ class TestRelevantLessons:
 
     def test_missing_file_is_empty(self, tmp_path):
         assert rv.relevant_lessons(["scripts/hooks/x"], tmp_path / "none.md") == []
+
+
+class TestReviewLessons:
+    WORKTREE = "- [2026-10-10] 작업 트리 규칙 [키: scripts/hooks]\n"
+    AT_HEAD = "- [2026-10-10] 커밋 규칙 [키: scripts/hooks]\n- [2026-10-12] gh 규칙 [키: gh api]\n"
+
+    @pytest.fixture
+    def fake_git(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(rv, "review_lessons", REAL_REVIEW_LESSONS)
+        (tmp_path / "LESSONS.md").write_text(self.WORKTREE + "- [2026-10-12] gh 규칙 [키: gh api]\n")
+        outputs = {"show": self.AT_HEAD, "diff": "+++ b/scripts/hooks/x.sh\n+echo hi\n", "ls-files": ""}
+        monkeypatch.setattr(rv, "_git", lambda *args: outputs[args[0]])
+        return outputs
+
+    def test_commit_review_reads_lessons_at_head(self, fake_git):
+        assert rv.review_lessons("main", "def") == ["- [2026-10-10] 커밋 규칙 [키: scripts/hooks]"]
+
+    def test_word_key_matches_diff_content(self, fake_git):
+        fake_git["diff"] = "+++ b/src/a.py\n+run(['gh api', '--paginate'])\n"
+        assert rv.review_lessons("main", "def") == ["- [2026-10-12] gh 규칙 [키: gh api]"]
+
+    def test_worktree_review_matches_untracked_new_files(self, fake_git):
+        fake_git["diff"] = ""
+        fake_git["ls-files"] = "scripts/hooks/new.sh\n"
+        assert rv.review_lessons("main", None) == ["- [2026-10-10] 작업 트리 규칙 [키: scripts/hooks]"]
 
 
 # ---------------------------------------------------------------------------
