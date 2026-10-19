@@ -10,7 +10,7 @@ ARCHITECTURE는 CLAUDE.md import로 이미 로드되어 있다. 추가로 읽을
 
 1. `docs/PROGRESS.md`와 `phases/index.json`을 먼저 읽는다. 이미 completed인 기능은 다시 설계하지 않는다. blocked나 error인 phase가 있으면 그것부터 사용자에게 알린다.
 2. `docs/PRD.md`를 읽고 기획 의도를 파악한다. 기술 스택이나 설계를 정해야 하면 `docs/ADR.md`도 읽는다.
-3. `docs/LESSONS.md`를 읽는다. 매 세션 로드하지 않으므로, 관련 규칙은 C절 8번대로 step 파일에 옮겨 적어야 worker에게 전달된다.
+3. `docs/LESSONS.md`를 읽는다. 키(`[키: …]`)가 step 파일 글과 맞는 줄은 execute.py가 worker 프롬프트에 자동으로 붙인다(C절 8번).
 
 코드베이스를 넓게 봐야 하면 Explore 에이전트를 병렬로 사용한다(읽기 전용이라 충돌이 없다).
 
@@ -31,7 +31,7 @@ ARCHITECTURE는 CLAUDE.md import로 이미 로드되어 있다. 추가로 읽을
 5. **AC는 실행 가능한 커맨드** — "~가 동작해야 한다" 같은 추상적 서술이 아닌 `npm run build && npm test` 같은 실제 실행 가능한 검증 커맨드를 포함한다.
 6. **주의사항은 구체적으로** — "조심해라" 대신 "X를 하지 마라. 이유: Y" 형식으로 적는다.
 7. **네이밍** — step name은 kebab-case slug로, 해당 step의 핵심 모듈/작업을 한두 단어로 표현한다 (예: `project-setup`, `api-layer`, `auth-flow`).
-8. **LESSONS 반영** — `docs/LESSONS.md` 규칙 중 이 step에 해당하는 것을 금지사항에 옮겨 적는다. worker는 LESSONS를 자동으로 읽지 않으므로 이것이 유일한 전달 경로다.
+8. **LESSONS 반영** — step 파일에 만들거나 고칠 경로를 적으면, 키가 맞는 LESSONS 줄이 worker 프롬프트에 자동으로 붙는다. 키로 잡히지 않는 판단 규칙만 금지사항에 옮겨 적는다.
 
 ### D. 파일 생성
 
@@ -242,7 +242,7 @@ herdr 화면 배치 (herdr 안일 때):
 | PR을 연 뒤 | `python3 scripts/pr_review.py --pr <번호>` (이 Mac에서) | 리뷰하지 않는다. push 때 남은 결과(`.review/results/<커밋>.json`)를 붙인다 | 위험도 라벨·코멘트·상태 체크 `AI Review`. 차단 지적이나 critical의 RFC/ADR 링크 누락이면 failure |
 
 - 커밋에는 리뷰를 걸지 않는다. 커밋마다 리뷰하면 가장 느려지고, push 전 리뷰와 겹친다.
-- 로컬 게이트는 **실수로 리뷰를 건너뛰는 것**만 막는다(dangerous-cmd-guard가 `--no-verify`를 막는다). 의도적 우회는 막지 않는다. 진짜 강제는 GitHub 상태 체크 `AI Review`를 required로 건 branch protection이 한다.
+- 로컬 게이트는 **실수로 리뷰를 건너뛰는 것**만 막는다(dangerous-cmd-guard가 `--no-verify`를 막는다). 의도적 우회는 막지 않는다. GitHub 상태 체크 `AI Review`는 표시용이다(merge를 막지 않는다).
 - 설치: 저장소를 받으면 `scripts/install_git_hooks.sh`를 한 번 실행한다(`core.hooksPath=.githooks`).
 - Claude가 push할 때는 `run_in_background`로 실행한다. pre-push 리뷰가 Bash timeout보다 길 수 있다.
 - 리뷰어(codex·claude)는 이 Mac의 로그인(OAuth)으로 돈다. API 키나 GitHub Actions가 필요 없다. PR 단계도 리뷰를 다시 돌리지 않는다(기록이 없는 커밋만 지금 리뷰).

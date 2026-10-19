@@ -38,6 +38,9 @@ STATUS_FILE = REVIEW_DIR / "status.json"
 PASSED_FILE = REVIEW_DIR / "passed"
 # 커밋별 리뷰 결과. PR 단계(pr_review.py)가 다시 리뷰하지 않고 이 결과를 쓴다.
 RESULTS_DIR = REVIEW_DIR / "results"
+LESSONS_FILE = ROOT / "docs" / "LESSONS.md"
+LESSON_KEYS = re.compile(r"\[키:\s*([^\]]+)\]\s*$")
+MAX_INTENT_COMMITS = 20
 
 BLOCKING_MAX_PRIORITY = 1
 # 확인되지 않은 P1도 이만큼의 리뷰어가 같은 등급으로 지적하면 차단한다.
@@ -91,6 +94,17 @@ def is_worktree_clean() -> bool:
     return not _git("status", "--porcelain").strip()
 
 
+def commit_subjects(base: str, head: Optional[str]) -> list:
+    """리뷰 범위의 커밋 제목(최신순). 리뷰어에게 변경 의도로 준다."""
+    out = _git("log", f"-n{MAX_INTENT_COMMITS}", "--format=%s", f"{base}..{head or 'HEAD'}")
+    return [line for line in out.splitlines() if line.strip()]
+
+
+def review_range(base: str, head: Optional[str]) -> str:
+    """리뷰 대상 diff 범위. head가 없으면 작업 트리까지."""
+    return f"{base}...{head}" if head else base
+
+
 def changed_lines(diff_range: str) -> dict:
     """{경로: 변경 줄 수}. 바이너리는 0줄."""
     lines = {}
@@ -98,6 +112,26 @@ def changed_lines(diff_range: str) -> dict:
         added, deleted, path = row.split("\t", 2)
         lines[path] = sum(int(n) for n in (added, deleted) if n.isdigit())
     return lines
+
+
+# ---------- LESSONS ----------
+
+def relevant_lessons(texts: list, path: Optional[Path] = None) -> list:
+    """`[키: a, b]`의 키 하나라도 texts 어딘가에 들어 있는 LESSONS 줄. 손으로 옮겨 적지 않아도 전달되게 한다."""
+    path = path or LESSONS_FILE
+    if not path.exists():
+        return []
+    found = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = LESSON_KEYS.search(line) if line.startswith("- [") else None
+        keys = [k.strip() for k in match.group(1).split(",") if k.strip()] if match else []
+        if any(k in text for k in keys for text in texts):
+            found.append(line)
+    return found
+
+
+def lessons_section(heading: str, lessons: list) -> str:
+    return f"## {heading}\n\n" + "\n".join(lessons) + "\n\n" if lessons else ""
 
 
 # ---------- 리뷰어 선택 ----------
@@ -117,21 +151,24 @@ def choose_reviewers(config: dict, lines_by_path: dict) -> list:
 
 # ---------- 프롬프트 ----------
 
-def build_prompt(base: str, *, head: Optional[str] = None) -> str:
+def build_prompt(base: str, *, head: Optional[str] = None, intent: tuple = (), lessons: tuple = ()) -> str:
     diff = f"git diff {base}...{head}" if head else f"git diff {base}"
     read_hint = f" 작업 트리는 리뷰 대상과 다를 수 있으니 파일은 `git show {head}:<경로>`로 읽어라." if head else ""
+    intent_part = ("## 이 변경의 의도 (커밋 제목)\n\n" + "\n".join(f"- {s}" for s in intent) +
+                   "\n\n의도 자체는 따지지 말고, 코드가 그 의도를 달성했는지와 의도 밖의 변경을 했는지 보라.\n") if intent else ""
+    lessons_part = lessons_section("이 변경과 관련된 LESSONS (재발하면 P1)", list(lessons))
     parts = [
         "너는 다른 엔지니어가 만든 코드 변경을 리뷰한다. 코드를 수정하지 마라.\n",
-        "1. REVIEW.md(리뷰 기준, 특히 '지적하지 말 것')와 CLAUDE.md를 읽어라. docs/LESSONS.md는 전체를 읽지 말고 "
-        "변경 파일·영역 이름으로 grep해 관련 줄만 읽어라. 구조나 기술 스택을 바꾸는 변경이면 "
-        "docs/ARCHITECTURE.md와 docs/ADR.md도 읽어라.",
+        intent_part + lessons_part +
+        "1. REVIEW.md(리뷰 기준, 특히 '지적하지 말 것')와 CLAUDE.md를 읽어라. docs/LESSONS.md 중 이 변경과 관련된 줄은 "
+        "위에 붙였다. 구조나 기술 스택을 바꾸는 변경이면 docs/ARCHITECTURE.md와 docs/ADR.md도 읽어라.",
         f"2. `{diff}`" + ("" if head else "와 `git status --short`(아직 커밋하지 않은 새 파일)") +
         f"로 변경을 확인하라. 필요하면 변경 파일 전체를 읽어 맥락을 확인하라.{read_hint}",
         "3. REVIEW.md의 심각도(P0-P3), 체크리스트, Risk Score 기준을 그대로 적용하라.",
         "4. 이 diff가 새로 만든 문제만 지적하라. 기존 문제는 pre_existing=true로 표시하라.",
         "5. 머지를 막을 문제를 먼저 찾아라. 지적마다 왜 틀렸는지(body)와 실패를 보이는 방법(repro: 테스트·명령·입력)을 적어라.",
-        "6. 코드나 실행으로 직접 확인한 지적만 confirmed=true로 하라. 추정이면 confirmed=false로 두고, "
-        "summary에 어디까지 확인했는지 적어라.",
+        "6. 실행으로 실패를 봤거나, 호출부부터 실패 지점까지 경로를 줄 단위로 따라가 보인 지적만 confirmed=true로 하라. "
+        "줄만 가리킨 지적은 confirmed=false로 두고, summary에 어디까지 확인했는지 적어라.",
         "7. 결과는 주어진 JSON 스키마 형식 하나로만 출력하라. 첫 리뷰이므로 resolved는 빈 배열로 둔다.",
     ]
     return "\n".join(parts) + "\n"
@@ -363,7 +400,7 @@ def _select(config: dict, base: str, head: Optional[str], previous: Optional[dic
         names = [r["name"] for r in config["roles"]["reviewers"]]
         found = {n for f in blocking_findings(previous) for n in f.get("found_by", [])}
         return [n for n in names if n in found] or names
-    return choose_reviewers(config, changed_lines(f"{base}...{head}" if head else base))
+    return choose_reviewers(config, changed_lines(review_range(base, head)))
 
 
 def carry_unresolved(merged: dict, previous: dict, results: dict) -> dict:
@@ -421,7 +458,12 @@ def run_review(base: str, out: Path, *, config: Optional[dict] = None, work_dir:
     mode = "verify" if previous else "first"
     status = {"state": "running", "mode": mode, "reviewers": list(reviewers), "started_at": _now()}
     write_status(status)
-    prompt = build_verify_prompt(previous, head) if previous else build_prompt(base, head=head)
+    if previous:
+        prompt = build_verify_prompt(previous, head)
+    else:
+        paths = list(changed_lines(review_range(base, head)))
+        prompt = build_prompt(base, head=head, intent=tuple(commit_subjects(base, head)),
+                              lessons=tuple(relevant_lessons(paths)))
     results, failed = _run_reviewers(reviewers, prompt, config["timeouts_sec"]["review"], work_dir)
     if not results:
         write_status({**status, "state": "failed", "finished_at": _now()})
@@ -461,7 +503,7 @@ def build_fix_prompt(merged: dict, project: str) -> str:
         "한 자리만 고치면 다음 리뷰가 같은 문제를 다른 자리에서 다시 찾는다.\n"
         "3. 각 수정에는 문제를 재현하는 테스트를 먼저 추가하라. 기존 테스트를 깨뜨리지 마라.\n"
         "4. 각 지적의 원인을 규칙 한 줄(300자 이하)로 docs/LESSONS.md에 추가하라. "
-        "형식: `- [YYYY-MM-DD] 규칙. 원인: … (출처: review)`. 같은 규칙이 있으면 새 줄을 붙이지 말고 그 줄을 고쳐라.\n"
+        "형식: `- [YYYY-MM-DD] 규칙. 원인: … (출처: review) [키: 관련 경로나 단어, …]`. 같은 규칙이 있으면 새 줄을 붙이지 말고 그 줄을 고쳐라.\n"
         "5. 커밋하지 마라. 실행기가 커밋한다.\n"
     )
 

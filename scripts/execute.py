@@ -236,7 +236,7 @@ class StepExecutor:
             f"   - {self.MAX_RETRIES}회 수정 시도 후에도 실패 → \"error\" + \"error_message\" 기록\n"
             f"   - 사용자 개입이 필요한 경우 (API 키, 인증, 수동 설정 등) → \"blocked\" + \"blocked_reason\" 기록 후 즉시 중단\n"
             f"6. 재시도 끝에 고친 실수가 있으면 원인→규칙 한 줄을 docs/LESSONS.md에 추가하라 "
-            f"(형식: `- [YYYY-MM-DD] 규칙. 원인: … (출처: {self._phase_name}/step N)`).\n"
+            f"(형식: `- [YYYY-MM-DD] 규칙. 원인: … (출처: {self._phase_name}/step N) [키: 관련 경로나 단어, …]`).\n"
             f"7. 모든 변경사항을 커밋하라:\n"
             f"   {commit_example}\n\n---\n\n"
         )
@@ -262,7 +262,9 @@ class StepExecutor:
             print(f"  ERROR: {step_file} not found")
             sys.exit(1)
 
-        result = self._run_claude(preamble + step_file.read_text())
+        step_text = step_file.read_text()
+        lessons = review.relevant_lessons([step_text], Path(self._root) / "docs" / "LESSONS.md")
+        result = self._run_claude(preamble + review.lessons_section("지켜야 할 LESSONS", lessons) + step_text)
 
         if result.returncode != 0:
             print(f"\n  WARN: Claude가 비정상 종료됨 (code {result.returncode})")

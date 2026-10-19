@@ -421,6 +421,19 @@ class TestInvokeClaude:
         assert "PREAMBLE" in cmd[-1]
         assert "UI를 구현하세요" in cmd[-1]
 
+    def test_appends_lessons_matching_step_file(self, executor):
+        docs = Path(executor._root) / "docs"
+        (docs / "LESSONS.md").write_text("- [2026-10-10] UI 규칙 [키: UI를 구현]\n- [2026-10-11] 무관 [키: db/]\n")
+        with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="{}", stderr="")) as mock_run:
+            executor._invoke_claude({"step": 2, "name": "ui"}, "preamble")
+        prompt = mock_run.call_args[0][0][-1]
+        assert "## 지켜야 할 LESSONS" in prompt and "UI 규칙" in prompt and "무관" not in prompt
+
+    def test_no_lessons_section_without_match(self, executor):
+        with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="{}", stderr="")) as mock_run:
+            executor._invoke_claude({"step": 2, "name": "ui"}, "preamble")
+        assert "지켜야 할 LESSONS" not in mock_run.call_args[0][0][-1]
+
     def test_saves_output_json(self, executor):
         mock_result = MagicMock(returncode=0, stdout='{"ok": true}', stderr="")
         step = {"step": 2, "name": "ui"}

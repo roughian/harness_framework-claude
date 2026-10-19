@@ -6,7 +6,7 @@ PR 리뷰 마무리 — push 때 이미 끝난 리뷰 결과(.review/results/<�
 결과가 없을 때만(리뷰 없이 올라간 커밋) 지금 리뷰한다.
 
     위험도 라벨(risk:*), 사람 리뷰어 지정(설정했을 때만), auto-merge 끄기, 요약 코멘트 1개,
-    GitHub 상태 체크 "AI Review"(success/failure) — 이 체크를 required로 걸면 통과 전에는 merge할 수 없다.
+    GitHub 상태 체크 "AI Review"(success/failure, 표시용 — merge는 막지 않는다).
 
 Usage:
     python3 scripts/pr_review.py --pr 12 [--repo owner/name]
@@ -170,7 +170,7 @@ def upsert_comment(repo: str, number: int, body: str):
 
 
 def set_status(repo: str, head: str, merged: dict, plan: dict):
-    """required check로 걸 수 있는 커밋 상태. 실패면 merge 버튼이 잠긴다."""
+    """커밋 상태 "AI Review". 표시용이다(required로 걸지 않는다)."""
     gh(["api", "-X", "POST", f"repos/{repo}/statuses/{head}",
         "-f", f"state={'failure' if plan['fail'] else 'success'}",
         "-f", f"context={STATUS_CONTEXT}", "-f", f"description={status_description(merged, plan)}"])

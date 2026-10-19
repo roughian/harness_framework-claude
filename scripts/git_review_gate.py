@@ -5,7 +5,7 @@ git pre-push 리뷰 게이트 — .githooks/pre-push가 부른다.
 push 범위를 review.py로 리뷰하고, 차단 지적이 있거나(exit 3, 규칙은 REVIEW.md) 리뷰어가 모두 실패하면(exit 1) 막는다.
 이미 통과한 범위(.review/passed, execute.py 게이트나 이전 push가 기록)는 다시 리뷰하지 않는다.
 직전 push 리뷰가 같은 범위에서 막혔다면 전체를 다시 보지 않고 그 지적과 수정분만 검증한다.
-로컬 게이트는 실수로 리뷰를 건너뛰는 것을 막는 장치다. 진짜 강제는 required로 건 상태 체크 AI Review가 한다.
+로컬 게이트는 실수로 리뷰를 건너뛰는 것을 막는 장치다. 의도적 우회는 막지 않는다(AI Review 상태 체크는 표시용).
 
 Usage:
     python3 scripts/git_review_gate.py pre-push < <git이 주는 ref 목록>

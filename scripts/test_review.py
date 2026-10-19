@@ -46,6 +46,8 @@ def _isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(rv, "is_worktree_clean", lambda: True)
     monkeypatch.setattr(rv, "changed_lines", lambda diff_range: {"src/big.ts": 500})
     monkeypatch.setattr(rv, "merge_base", lambda a, b: "b" * 40)
+    monkeypatch.setattr(rv, "commit_subjects", lambda base, head: [])
+    monkeypatch.setattr(rv, "LESSONS_FILE", tmp_path / "LESSONS.md")
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +88,60 @@ class TestBuildPrompt:
     def test_head_reads_files_from_snapshot_not_worktree(self):
         assert "git show def:<경로>" in rv.build_prompt("abc", head="def")
         assert "git show" not in rv.build_prompt("main").split("확인하라.")[1].split("\n")[0]
+
+    def test_states_intent_from_commit_subjects(self):
+        prompt = rv.build_prompt("main", intent=["feat: add retry", "fix: keep timeout"])
+        assert "## 이 변경의 의도" in prompt and "- feat: add retry" in prompt
+
+    def test_omits_intent_without_commits(self):
+        assert "## 이 변경의 의도" not in rv.build_prompt("main")
+
+    def test_injects_relevant_lessons(self):
+        prompt = rv.build_prompt("main", lessons=["- [2026-10-10] 훅 규칙 [키: scripts/hooks]"])
+        assert "## 이 변경과 관련된 LESSONS" in prompt and "훅 규칙" in prompt
+        assert "grep" not in prompt
+
+    def test_run_review_passes_intent_and_lessons(self, tmp_path, monkeypatch):
+        (tmp_path / "LESSONS.md").write_text("- [2026-10-10] 큰 파일 규칙 [키: src/big]\n")
+        monkeypatch.setattr(rv, "commit_subjects", lambda base, head: ["feat: big change"])
+        seen = {}
+        def fake_run(reviewers, prompt, timeout, work_dir):
+            seen["prompt"] = prompt
+            return {"codex": _result()}, {}
+        monkeypatch.setattr(rv, "_run_reviewers", fake_run)
+        config = {"roles": {"reviewers": [CODEX_REVIEWER]}, "timeouts_sec": {"step": 1, "review": 1}}
+        rv.run_review("main", tmp_path / "out.json", config=config, head=HEAD_SHA)
+        assert "feat: big change" in seen["prompt"] and "큰 파일 규칙" in seen["prompt"]
+
+
+# ---------------------------------------------------------------------------
+# relevant_lessons
+# ---------------------------------------------------------------------------
+
+class TestRelevantLessons:
+    LINES = ("# LESSONS\n<!-- - [YYYY-MM-DD] 예시 [키: scripts] -->\n"
+             "- [2026-10-10] 훅 규칙 [키: scripts/hooks, .claude/settings]\n"
+             "- [2026-10-12] gh 규칙 [키: gh api]\n"
+             "- [2026-10-13] 키 없는 규칙\n")
+
+    def _lessons(self, tmp_path, texts):
+        path = tmp_path / "LESSONS.md"
+        path.write_text(self.LINES)
+        return rv.relevant_lessons(texts, path)
+
+    def test_returns_lines_whose_key_appears(self, tmp_path):
+        assert self._lessons(tmp_path, ["scripts/hooks/guard.sh"]) == [
+            "- [2026-10-10] 훅 규칙 [키: scripts/hooks, .claude/settings]"]
+
+    def test_any_key_in_any_text_matches(self, tmp_path):
+        found = self._lessons(tmp_path, ["src/a.py", "`gh api --paginate`를 쓴다"])
+        assert found == ["- [2026-10-12] gh 규칙 [키: gh api]"]
+
+    def test_unrelated_and_keyless_lines_are_skipped(self, tmp_path):
+        assert self._lessons(tmp_path, ["src/app.ts 키 없는 규칙"]) == []
+
+    def test_missing_file_is_empty(self, tmp_path):
+        assert rv.relevant_lessons(["scripts/hooks/x"], tmp_path / "none.md") == []
 
 
 # ---------------------------------------------------------------------------
@@ -327,7 +383,7 @@ class TestFixPrompt:
         prompt = rv.build_fix_prompt(merged, project="P")
         assert "SQL injection" in prompt and "a.ts:10" in prompt
         assert "naming nit" not in prompt
-        assert "docs/LESSONS.md" in prompt
+        assert "docs/LESSONS.md" in prompt and "[키:" in prompt
 
     def test_includes_repro(self):
         merged = rv.merge({"claude": _result([_finding(priority=0, repro="curl /x?id=1'")])}, failed={})
