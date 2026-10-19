@@ -46,6 +46,8 @@ BLOCKING_MAX_PRIORITY = 1
 # 확인되지 않은 P1도 이만큼의 리뷰어가 같은 등급으로 지적하면 차단한다.
 MIN_AGREEING_REVIEWERS = 2
 MAX_NITS = 5
+# 검증 리뷰 상한. 넘어도 남은 차단 지적은 사람이 정한다(execute.py·pre-push 공통).
+MAX_VERIFY_ROUNDS = 2
 NIT_PRIORITY = 3
 RISK_LEVELS = ((15, "low"), (35, "medium"), (60, "high"), (100, "critical"))
 CLAUDE_READ_ONLY_TOOLS = "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git status:*),Bash(git show:*)"
@@ -484,7 +486,8 @@ def run_review(base: str, out: Path, *, config: Optional[dict] = None, work_dir:
         write_status({**status, "state": "failed", "finished_at": _now()})
         raise ReviewError(f"모든 리뷰어 실패: {failed}")
 
-    merged = {"base": base, "head": reviewed_head, "mode": mode, **merge(results, failed)}
+    round_no = previous.get("round", 0) + 1 if previous else 0
+    merged = {"base": base, "head": reviewed_head, "mode": mode, "round": round_no, **merge(results, failed)}
     if previous:
         merged = carry_unresolved(merged, previous, results)
         if previous["risk"]["score"] > merged["risk"]["score"]:

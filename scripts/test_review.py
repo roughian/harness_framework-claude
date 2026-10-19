@@ -503,6 +503,16 @@ class TestVerifyReview:
         assert f"git diff {'a' * 40}" in prompt
         assert "전체를 다시 리뷰하지 마라" in prompt
 
+    def test_rounds_count_up_from_first_review(self, tmp_path):
+        work = tmp_path / "w"
+        work.mkdir()
+        runner, _ = _writer(work, {"codex": _result(), "claude": _result()})
+        with patch.object(rv, "run_local", side_effect=runner):
+            first = rv.run_review("main", tmp_path / "r.json", config=self.CONFIG, work_dir=work)
+            again = rv.run_review("main", tmp_path / "r.json", config=self.CONFIG, work_dir=work,
+                                  previous={**self._previous(), "round": 1})
+        assert (first["round"], again["round"]) == (0, 2)
+
     def test_only_reviewers_that_found_blocking_issues_rerun(self, tmp_path):
         work = tmp_path / "w"
         work.mkdir()

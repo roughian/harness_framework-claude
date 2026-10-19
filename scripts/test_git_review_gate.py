@@ -91,6 +91,28 @@ def test_repush_after_block_runs_verify_review():
     assert json.loads(previous.read_text())["blocking"] == 2
 
 
+def _blocked_previous(round_no):
+    finding = {"priority": 1, "confirmed": True, "pre_existing": False, "file": "a.py", "line_start": 3,
+               "title": "race in cache"}
+    gate.review.DEFAULT_OUT.write_text(json.dumps(
+        {"base": REMOTE, "head": "9" * 40, "blocking": 1, "round": round_no, "findings": [finding]}))
+
+
+def test_verify_review_runs_until_round_limit():
+    _blocked_previous(gate.review.MAX_VERIFY_ROUNDS - 1)
+    _, (review,) = _push(f"refs/heads/x {LOCAL} refs/heads/x {REMOTE}\n")
+    assert "--previous" in review
+
+
+def test_after_round_limit_blocks_without_reviewing_and_hands_to_human(capsys):
+    # 검증을 상한만큼 돌고도 남으면 AI 리뷰를 더 돌리지 않고 사람에게 넘긴다(phase 게이트와 같은 규칙).
+    _blocked_previous(gate.review.MAX_VERIFY_ROUNDS)
+    code, reviews = _push(f"refs/heads/x {LOCAL} refs/heads/x {REMOTE}\n")
+    err = capsys.readouterr().err
+    assert (code, reviews) == (gate.EXIT_BLOCK, [])
+    assert "race in cache" in err and gate.SKIP_ENV in err and "latest.json" in err
+
+
 def test_previous_review_for_other_range_is_ignored():
     gate.review.DEFAULT_OUT.write_text(json.dumps({"base": "d" * 40, "head": "9" * 40, "blocking": 2}))
     _, (review,) = _push(f"refs/heads/x {LOCAL} refs/heads/x {REMOTE}\n")

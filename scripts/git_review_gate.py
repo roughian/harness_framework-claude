@@ -5,6 +5,7 @@ git pre-push 리뷰 게이트 — .githooks/pre-push가 부른다.
 push 범위를 review.py로 리뷰하고, 차단 지적이 있거나(exit 3, 규칙은 REVIEW.md) 리뷰어가 모두 실패하면(exit 1) 막는다.
 이미 통과한 범위(.review/passed, execute.py 게이트나 이전 push가 기록)는 다시 리뷰하지 않는다.
 직전 push 리뷰가 같은 범위에서 막혔다면 전체를 다시 보지 않고 그 지적과 수정분만 검증한다.
+검증을 review.MAX_VERIFY_ROUNDS번 하고도 남으면 리뷰를 더 돌리지 않고 사람에게 넘긴다.
 로컬 게이트는 실수로 리뷰를 건너뛰는 것을 막는 장치다. 의도적 우회는 막지 않는다(AI Review 상태 체크는 표시용).
 
 Usage:
@@ -64,10 +65,23 @@ def _previous_review(base: str, head: str):
     return None
 
 
+def _hand_to_human(previous: dict) -> int:
+    items = "\n".join(f"  - P{f['priority']} {f['file']}:{f['line_start']} {f['title']}"
+                      for f in review.blocking_findings(previous))
+    print(f"\n[review gate] 검증 리뷰를 {review.MAX_VERIFY_ROUNDS}번 하고도 차단 지적이 남아 리뷰를 멈췄습니다. "
+          f"여기서부터는 사람이 정합니다.\n{items}\n"
+          f"  고쳤다면: {review.DEFAULT_OUT}을 지우고 다시 push하면 처음부터 리뷰합니다.\n"
+          f"  지적을 받아들이지 않으면: {SKIP_ENV}=1 git push", file=sys.stderr)
+    return EXIT_BLOCK
+
+
 def _review(base: str, head: str) -> int:
     """review.py를 실행하고, 차단해야 하면 사유를 출력한 뒤 EXIT_BLOCK을 돌려준다."""
     cmd = [sys.executable, str(REVIEW_SCRIPT), "--base", base, "--head", head]
     previous = _previous_review(base, head)
+    previous_result = json.loads(previous.read_text(encoding="utf-8")) if previous else {}
+    if previous_result.get("round", 0) >= review.MAX_VERIFY_ROUNDS:
+        return _hand_to_human(previous_result)
     if previous:
         # review.py가 결과를 같은 파일에 다시 쓰므로 이전 결과를 따로 복사해 넘긴다.
         snapshot = previous.with_name("previous.json")

@@ -238,7 +238,7 @@ herdr 화면 배치 (herdr 안일 때):
 | 시점 | 장치 | 리뷰 범위 | 막는 조건 |
 |---|---|---|---|
 | phase 끝 | `scripts/execute.py` 리뷰 게이트 | 첫 리뷰 → 수정 → 검증 리뷰(수정분만), 최대 2번 | 차단 지적이 남음(REVIEW.md 차단 규칙) → blocked |
-| `git push` | `.githooks/pre-push` → `scripts/git_review_gate.py` | push 범위. 이미 통과한 범위(`.review/passed`)는 건너뛰고, 직전 push에서 막혔으면 그 지적과 수정분만 검증한다 | 차단 지적, 리뷰어 전원 실패, 새 브랜치의 기준(main·origin/main) 없음 |
+| `git push` | `.githooks/pre-push` → `scripts/git_review_gate.py` | push 범위. 이미 통과한 범위(`.review/passed`)는 건너뛰고, 직전 push에서 막혔으면 그 지적과 수정분만 검증한다. 검증 2회 뒤에도 남으면 리뷰를 멈추고 사람에게 넘긴다(다시 리뷰: `.review/latest.json` 삭제, 받아들이지 않음: `HARNESS_SKIP_GIT_REVIEW=1 git push`) | 차단 지적, 리뷰어 전원 실패, 새 브랜치의 기준(main·origin/main) 없음 |
 | PR을 연 뒤 | `python3 scripts/pr_review.py --pr <번호>` (이 Mac에서) | 리뷰하지 않는다. push 때 남은 결과(`.review/results/<커밋>.json`)를 붙인다 | 위험도 라벨·코멘트·상태 체크 `AI Review`. 차단 지적이나 critical의 RFC/ADR 링크 누락이면 failure |
 
 - 커밋에는 리뷰를 걸지 않는다. 커밋마다 리뷰하면 가장 느려지고, push 전 리뷰와 겹친다.

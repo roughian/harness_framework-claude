@@ -64,7 +64,7 @@ class StepExecutor:
 
     MAX_RETRIES = 3
     # 첫 리뷰 뒤 '수정 → 검증 리뷰(수정분만)'를 최대 몇 번 돌지. 넘으면 blocked로 두고 사람이 판단한다.
-    MAX_REVIEW_FIX_ROUNDS = 2
+    MAX_REVIEW_FIX_ROUNDS = review.MAX_VERIFY_ROUNDS
     FEAT_MSG = "feat({phase}): step {num} — {name}"
     CHORE_MSG = "chore({phase}): step {num} output"
     FIX_MSG = "fix({phase}): address review findings"
