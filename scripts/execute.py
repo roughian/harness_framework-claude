@@ -11,6 +11,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -25,6 +26,17 @@ import review
 
 ROOT = Path(__file__).resolve().parent.parent
 SELECTION_MAX_AGE_DAYS = 7
+LIMIT_PATTERN = re.compile(r"usage limit|limit reached|rate.?limit|\b429\b", re.IGNORECASE)
+
+
+def is_usage_limited(output: dict) -> bool:
+    """worker가 사용량 한도로 멈췄는지. 성공한 응답 본문에 같은 단어가 있는 것은 무시한다."""
+    text = output.get("stdout") or ""
+    try:
+        failed = output["exitCode"] != 0 or bool(json.loads(text).get("is_error"))
+    except (ValueError, AttributeError):
+        failed = output["exitCode"] != 0
+    return failed and bool(LIMIT_PATTERN.search(text + (output.get("stderr") or "")))
 
 
 def _today() -> date:
@@ -71,6 +83,11 @@ class StepExecutor:
     PROGRESS_REL = "docs/PROGRESS.md"
     PUSH_BLOCKED_RISK_LEVELS = ("high", "critical")
     TIMEOUT_EXIT_CODE = -1
+    # 사용량 한도: 5분부터 두 배씩 최대 30분 간격으로, 합계 timeouts_sec.limit_wait(기본 6시간)까지 기다린다.
+    LIMIT_WAIT_FIRST_SEC = 300
+    LIMIT_WAIT_MAX_SEC = 1800
+    LIMIT_WAIT_TOTAL_DEFAULT_SEC = 21600
+    AC_OUTPUT_TAIL_CHARS = 2000
     TZ = timezone(timedelta(hours=9))
 
     def __init__(self, phase_dir_name: str, *, auto_push: bool = False, review_enabled: bool = True):
@@ -264,7 +281,8 @@ class StepExecutor:
 
         step_text = step_file.read_text()
         lessons = review.relevant_lessons([step_text], Path(self._root) / "docs" / "LESSONS.md")
-        result = self._run_claude(preamble + review.lessons_section("지켜야 할 LESSONS", lessons) + step_text)
+        result = self._run_claude(preamble + review.lessons_section("지켜야 할 LESSONS", lessons)
+                                  + self._fixed_ac_section(step) + step_text)
 
         if result.returncode != 0:
             print(f"\n  WARN: Claude가 비정상 종료됨 (code {result.returncode})")
@@ -281,6 +299,75 @@ class StepExecutor:
             json.dump(output, f, indent=2, ensure_ascii=False)
 
         return output
+
+    def _invoke_until_unlimited(self, step: dict, preamble: str) -> dict:
+        """사용량 한도에 걸리면 기다렸다가 같은 시도를 다시 한다. 재시도 횟수는 쓰지 않는다."""
+        total = self._config["timeouts_sec"].get("limit_wait", self.LIMIT_WAIT_TOTAL_DEFAULT_SEC)
+        delay, waited = self.LIMIT_WAIT_FIRST_SEC, 0
+        while True:
+            output = self._invoke_claude(step, preamble)
+            if not is_usage_limited(output) or waited >= total:
+                return output
+            pause = min(delay, total - waited)
+            print(f"  ⏳ 사용량 한도 — {pause // 60}분 기다린 뒤 같은 시도를 다시 합니다 (누적 {waited // 60}분)")
+            time.sleep(pause)
+            waited += pause
+            delay = min(delay * 2, self.LIMIT_WAIT_MAX_SEC)
+
+    # --- 고정 AC ---
+    # step에 ac(커맨드)·ac_files(오케스트레이터가 미리 쓴 인수 테스트)가 있으면 worker의 자기 보고보다 이 결과를 믿는다.
+
+    @staticmethod
+    def _fixed_ac_section(step: dict) -> str:
+        files = step.get("ac_files") or []
+        if not files:
+            return ""
+        return ("## 고정 AC\n\n오케스트레이터가 미리 쓴 인수 테스트다. 고치지 마라. "
+                "execute.py가 끝난 뒤 AC를 직접 다시 돌리고 이 파일이 바뀌었는지 확인한다.\n"
+                + "".join(f"- {f}\n" for f in files) + "\n")
+
+    def _verify_ac(self, step: dict, start: str) -> Optional[str]:
+        """고정 AC를 직접 확인한다. 통과하면 None, 아니면 다음 시도에 넘길 에러."""
+        files = step.get("ac_files") or []
+        if files and self._run_git("diff", "--quiet", start, "--", *files).returncode != 0:
+            self._run_git("checkout", start, "--", *files)
+            return f"고정 AC 파일을 고쳤다(되돌림): {', '.join(files)}. AC 파일은 그대로 두고 구현을 고쳐라."
+        if not step.get("ac"):
+            return None
+        try:
+            r = subprocess.run(step["ac"], shell=True, cwd=self._root, capture_output=True, text=True,
+                               timeout=self._config["timeouts_sec"]["step"])
+        except subprocess.TimeoutExpired:
+            return f"AC 커맨드 시간 초과: {step['ac']}"
+        if r.returncode == 0:
+            return None
+        return f"execute.py가 AC를 직접 돌렸더니 실패 ({step['ac']}):\n{(r.stdout + r.stderr)[-self.AC_OUTPUT_TAIL_CHARS:]}"
+
+    def _set_step(self, step_num: int, **fields):
+        index = self._read_json(self._index_file)
+        for s in index["steps"]:
+            if s["step"] == step_num:
+                s.update(fields)
+        self._write_json(self._index_file, index)
+
+    def _judge_attempt(self, step: dict, start: str) -> tuple:
+        """한 시도의 결과를 (status, 에러)로 판정한다."""
+        step_num = step["step"]
+        current = next(s for s in self._read_json(self._index_file)["steps"] if s["step"] == step_num)
+        status = current.get("status", "pending")
+        err = current.get("error_message", "Step did not update status")
+        if status in ("blocked", "error") or not (step.get("ac") or step.get("ac_files")):
+            return status, err
+        ac_error = self._verify_ac(step, start)
+        if ac_error:
+            return "failed", ac_error
+        if status == "completed" or not step.get("ac"):
+            return status, err
+        # 체크포인트: worker가 시간 초과 등으로 status를 못 바꿨어도 AC가 통과하면 그 작업은 끝났다.
+        summary = current.get("summary") or f"{step['name']}: worker가 마무리 전에 끝났지만 고정 AC 통과로 execute.py가 완료 처리"
+        self._set_step(step_num, status="completed", summary=summary)
+        print(f"  ✓ Step {step_num}: worker는 끝내지 못했지만 AC가 통과해 완료로 처리합니다")
+        return "completed", err
 
     # --- 헤더 & 검증 ---
 
@@ -333,6 +420,7 @@ class StepExecutor:
         step_num, step_name = step["step"], step["name"]
         done = sum(1 for s in self._read_json(self._index_file)["steps"] if s["status"] == "completed")
         prev_error = None
+        start = self._run_git("rev-parse", "HEAD").stdout.strip()
 
         for attempt in range(1, self.MAX_RETRIES + 1):
             index = self._read_json(self._index_file)
@@ -344,11 +432,14 @@ class StepExecutor:
                 tag += f" [retry {attempt}/{self.MAX_RETRIES}]"
 
             with progress_indicator(tag) as pi:
-                self._invoke_claude(step, preamble)
+                output = self._invoke_until_unlimited(step, preamble)
                 elapsed = int(pi.elapsed)
 
+            if is_usage_limited(output):
+                self._set_step(step_num, status="blocked",
+                               blocked_reason="사용량 한도가 limit_wait 안에 풀리지 않음. 풀린 뒤 pending으로 바꿔 다시 실행")
+            status, err_msg = self._judge_attempt(step, start)
             index = self._read_json(self._index_file)
-            status = next((s.get("status", "pending") for s in index["steps"] if s["step"] == step_num), "pending")
             ts = self._stamp()
 
             if status == "completed":
@@ -371,11 +462,6 @@ class StepExecutor:
                 self._update_top_index("blocked")
                 self._record_progress("blocked", f"step {step_num} {step_name} — {reason}")
                 sys.exit(2)
-
-            err_msg = next(
-                (s.get("error_message", "Step did not update status") for s in index["steps"] if s["step"] == step_num),
-                "Step did not update status",
-            )
 
             if attempt < self.MAX_RETRIES:
                 for s in index["steps"]:

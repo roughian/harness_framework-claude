@@ -778,3 +778,138 @@ class TestHeaderModelSelection:
         self._config(executor, "")
         executor._print_header()
         assert "WARN" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# 사용량 한도 대기
+# ---------------------------------------------------------------------------
+
+def _out(code=0, stdout="", stderr=""):
+    return {"exitCode": code, "stdout": stdout, "stderr": stderr}
+
+
+LIMITED = _out(1, stderr="Claude AI usage limit reached|1760000000")
+
+
+class TestUsageLimit:
+    @pytest.mark.parametrize("output,expected", [
+        (LIMITED, True),
+        (_out(0, json.dumps({"is_error": True, "result": "5-hour limit reached ∙ resets 3pm"})), True),
+        # 성공한 응답 본문에 '한도' 단어가 있어도 한도가 아니다(예: rate limit 미들웨어를 구현함).
+        (_out(0, json.dumps({"is_error": False, "result": "implemented rate limit middleware"})), False),
+        (_out(-1, stderr="timeout after 3600s"), False),
+    ])
+    def test_detects_limit_only_on_error(self, output, expected):
+        assert ex.is_usage_limited(output) is expected
+
+    def _run(self, executor, outputs, limit_wait=21600):
+        executor._config["timeouts_sec"]["limit_wait"] = limit_wait
+        with patch.object(executor, "_invoke_claude", side_effect=outputs) as inv, \
+             patch.object(ex.time, "sleep") as sleep:
+            result = executor._invoke_until_unlimited({"step": 2, "name": "ui"}, "p")
+        return result, inv.call_count, [c.args[0] for c in sleep.call_args_list]
+
+    def test_waits_with_doubling_backoff_capped_at_30_minutes(self, executor):
+        ok = _out(0, "{}")
+        result, calls, sleeps = self._run(executor, [LIMITED] * 5 + [ok])
+        assert result is ok and calls == 6
+        assert sleeps == [300, 600, 1200, 1800, 1800]
+
+    def test_gives_up_when_total_wait_reaches_limit_wait(self, executor):
+        result, calls, sleeps = self._run(executor, [LIMITED] * 5, limit_wait=900)
+        assert result is LIMITED and calls == 3 and sleeps == [300, 600]
+
+
+# ---------------------------------------------------------------------------
+# 고정 AC: execute.py가 AC를 직접 돌리고, 오케스트레이터가 쓴 AC 파일이 그대로인지 본다
+# ---------------------------------------------------------------------------
+
+AC_STEP = {"step": 2, "name": "ui", "ac": "pytest tests/ac", "ac_files": ["tests/ac/test_ui.py"]}
+
+
+def _git(diff_code=0):
+    def run(*args):
+        code = diff_code if args[:2] == ("diff", "--quiet") else 0
+        return subprocess.CompletedProcess(["git", *args], code, "", "")
+    return MagicMock(side_effect=run)
+
+
+def _ac_run(code=0, out="ok"):
+    return patch.object(ex.subprocess, "run", return_value=subprocess.CompletedProcess("ac", code, out, ""))
+
+
+def _set_status(phase_dir, **fields):
+    index = json.loads((phase_dir / "index.json").read_text())
+    index["steps"][2].update(fields)
+    (phase_dir / "index.json").write_text(json.dumps(index))
+
+
+class TestFixedAc:
+    def test_steps_without_ac_are_not_checked(self, executor):
+        executor._run_git = _git()
+        assert executor._verify_ac({"step": 2, "name": "ui"}, "start") is None
+        executor._run_git.assert_not_called()
+
+    def test_changed_ac_file_is_restored_and_fails(self, executor):
+        executor._run_git = _git(diff_code=1)
+        with _ac_run():
+            err = executor._verify_ac(AC_STEP, "start")
+        assert "tests/ac/test_ui.py" in err
+        executor._run_git.assert_any_call("checkout", "start", "--", "tests/ac/test_ui.py")
+
+    def test_failing_ac_reports_its_output(self, executor):
+        executor._run_git = _git()
+        with _ac_run(1, "FAILED test_ui"):
+            assert "FAILED test_ui" in executor._verify_ac(AC_STEP, "start")
+
+    def test_worker_claims_done_but_ac_fails_is_not_completed(self, executor, phase_dir):
+        _set_status(phase_dir, status="completed", summary="done")
+        executor._run_git = _git()
+        with _ac_run(1, "FAILED test_ui"):
+            status, err = executor._judge_attempt(AC_STEP, "start")
+        assert status != "completed" and "FAILED test_ui" in err
+
+    def test_timed_out_step_whose_ac_passes_is_completed(self, executor, phase_dir):
+        # worker가 시간 초과로 status를 못 바꿨어도 AC가 통과하면 그 작업은 끝난 것이다(체크포인트).
+        executor._run_git = _git()
+        with _ac_run(0):
+            status, _ = executor._judge_attempt(AC_STEP, "start")
+        step = json.loads((phase_dir / "index.json").read_text())["steps"][2]
+        assert status == "completed" and step["status"] == "completed" and step["summary"]
+
+    def test_worker_error_is_kept_even_if_ac_passes(self, executor, phase_dir):
+        _set_status(phase_dir, status="error", error_message="arch rule broken")
+        executor._run_git = _git()
+        with _ac_run(0) as run:
+            status, err = executor._judge_attempt(AC_STEP, "start")
+        assert status == "error" and err == "arch rule broken"
+        run.assert_not_called()
+
+    def test_prompt_lists_fixed_ac_files(self, executor, phase_dir):
+        (phase_dir / "step2.md").write_text("# Step 2")
+        with patch.object(executor, "_run_claude", return_value=subprocess.CompletedProcess("c", 0, "{}", "")) as rc:
+            executor._invoke_claude(AC_STEP, "preamble")
+        assert "tests/ac/test_ui.py" in rc.call_args.args[0]
+
+
+class TestExecuteSingleStepWiring:
+    def test_limit_that_never_clears_blocks_the_step(self, executor, phase_dir):
+        executor._run_git = _git()
+        with patch.object(executor, "_invoke_until_unlimited", return_value=LIMITED), \
+             patch.object(executor, "_record_progress"), pytest.raises(SystemExit) as exc:
+            executor._execute_single_step({"step": 2, "name": "ui"})
+        assert exc.value.code == 2
+        assert json.loads((phase_dir / "index.json").read_text())["steps"][2]["status"] == "blocked"
+
+    def test_ac_failure_feeds_next_attempt(self, executor, phase_dir):
+        executor._run_git = _git()
+        seen = []
+        def invoke(step, preamble):
+            seen.append(preamble)
+            _set_status(phase_dir, status="completed", summary="done")
+            return _out(0, "{}")
+        with patch.object(executor, "_invoke_until_unlimited", side_effect=invoke), \
+             _ac_run(1, "FAILED test_ui"), patch.object(executor, "_record_progress"), pytest.raises(SystemExit):
+            executor._execute_single_step(AC_STEP)
+        assert len(seen) == ex.StepExecutor.MAX_RETRIES and "FAILED test_ui" in seen[1]
+        assert json.loads((phase_dir / "index.json").read_text())["steps"][2]["status"] == "error"

@@ -30,7 +30,8 @@
   },
   "timeouts_sec": {
     "step": 3600,
-    "review": 1800
+    "review": 1800,
+    "limit_wait": 21600
   },
   "github": {
     "reviewers": [],

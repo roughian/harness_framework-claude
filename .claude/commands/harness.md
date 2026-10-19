@@ -18,6 +18,8 @@ ARCHITECTURE는 CLAUDE.md import로 이미 로드되어 있다. 추가로 읽을
 
 구현을 위해 구체화하거나 기술적으로 결정해야 할 사항이 있으면 사용자에게 제시하고 논의한다.
 
+결정 사항과 함께 **검증 안 된 가정** 목록을 먼저 보여 준다. PRD와 계획이 기대는 가정(예: "API가 페이지당 100건을 준다", "이 테이블은 1만 행 이하다")마다 코드·데이터·문서로 확인했는지 표시한다. 확인하지 못한 가정은 그것이 틀리면 무엇이 바뀌는지와 함께 적고, 사용자가 답하거나 확인 step을 먼저 두기 전에는 그 가정 위에 step을 쌓지 않는다. 이유: 틀린 가정 위에 쓴 step은 AC를 통과해도 쓸모가 없다.
+
 ### C. Step 설계
 
 사용자가 구현 계획 작성을 지시하면 여러 step으로 나뉜 초안을 작성해 피드백을 요청한다.
@@ -32,6 +34,7 @@ ARCHITECTURE는 CLAUDE.md import로 이미 로드되어 있다. 추가로 읽을
 6. **주의사항은 구체적으로** — "조심해라" 대신 "X를 하지 마라. 이유: Y" 형식으로 적는다.
 7. **네이밍** — step name은 kebab-case slug로, 해당 step의 핵심 모듈/작업을 한두 단어로 표현한다 (예: `project-setup`, `api-layer`, `auth-flow`).
 8. **LESSONS 반영** — step 파일에 만들거나 고칠 경로를 적으면, 키가 맞는 LESSONS 줄이 worker 프롬프트에 자동으로 붙는다. 키로 잡히지 않는 판단 규칙만 금지사항에 옮겨 적는다.
+9. **고정 AC** — 결과를 검증할 수 있는 step은 오케스트레이터가 인수 테스트를 먼저 쓰고 커밋한 뒤, step의 `ac`(커맨드)와 `ac_files`(그 테스트 파일)에 적는다(D-2). worker는 이 파일을 고칠 수 없다. execute.py가 worker가 끝난 뒤 `ac`를 직접 돌리고, `ac_files`가 바뀌었으면 되돌리고 실패로 처리한다. PRD의 수치 성공 기준은 이 테스트로 옮긴다. 이유: worker가 자기 테스트를 직접 써서 통과시키면 자기평가가 된다.
 
 ### D. 파일 생성
 
@@ -65,7 +68,8 @@ ARCHITECTURE는 CLAUDE.md import로 이미 로드되어 있다. 추가로 읽을
   "steps": [
     { "step": 0, "name": "project-setup", "status": "pending" },
     { "step": 1, "name": "core-types", "status": "pending" },
-    { "step": 2, "name": "api-layer", "status": "pending" }
+    { "step": 2, "name": "api-layer", "status": "pending",
+      "ac": "npm test -- tests/ac/api-layer", "ac_files": ["tests/ac/api-layer.test.ts"] }
   ]
 }
 ```
@@ -77,6 +81,7 @@ ARCHITECTURE는 CLAUDE.md import로 이미 로드되어 있다. 추가로 읽을
 - `steps[].step`: 0부터 시작하는 순번.
 - `steps[].name`: kebab-case slug.
 - `steps[].status`: 초기값은 모두 `"pending"`.
+- `steps[].ac`, `steps[].ac_files`: 고정 AC(C절 9번). 선택 항목이다. `ac_files`는 phase 실행 전에 커밋되어 있어야 한다(step 시작 커밋과 비교한다).
 - `review`: `{risk_score, risk_level, blocking, rounds}`. 리뷰 게이트가 끝나면 execute.py가 기록한다. 생성 시 넣지 않는다.
 
 상태 전이와 자동 기록 필드:
@@ -153,6 +158,8 @@ execute.py가 자동으로 처리하는 것:
 - 모델 — step은 `harness.config.json`의 `worker` 선택(model·effort·timeout)으로 실행한다. 헤더에 모델과 선택 일자를 보여 주고, 오래됐으면 경고한다.
 - 컨텍스트 — 규칙 문서는 CLAUDE.md import로 claude가 직접 로드한다. 프롬프트에는 이전 step summary와 작업 규칙만 넣는다.
 - 자가 교정 — 실패나 타임아웃 시 최대 3회 재시도하며, 이전 에러를 프롬프트에 피드백한다.
+- 고정 AC — step에 `ac`가 있으면 worker가 completed라고 해도 AC를 직접 돌려 실패하면 재시도로 돌린다. 반대로 worker가 시간 초과로 status를 못 바꿨어도 AC가 통과하면 완료로 처리하고 커밋한다(체크포인트).
+- 사용량 한도 — worker가 한도에 걸리면 재시도 횟수를 쓰지 않고 5분부터 두 배씩(최대 30분 간격) 기다린 뒤 같은 시도를 다시 한다. 합계가 `timeouts_sec.limit_wait`(기본 6시간)을 넘으면 step을 blocked로 둔다.
 - 2단계 커밋 — 코드 변경(`feat`)과 메타데이터(`chore`)를 분리 커밋한다.
 - **리뷰 게이트** — 모든 step이 끝나면 `scripts/review.py`로 리뷰한다(병렬 subprocess). 결과는 `phases/{task-name}/review.json`에 남는다.
   - 첫 리뷰: 변경이 작고(`review.single_reviewer_max_lines`, 기본 100줄) 민감 경로(`review.full_review_paths`)가 아니면 리뷰어 1명, 아니면 Claude+Codex 교차.
