@@ -795,10 +795,12 @@ class TestUsageLimit:
     @pytest.mark.parametrize("output,expected", [
         (LIMITED, True),
         (_out(0, json.dumps({"is_error": True, "result": "5-hour limit reached ∙ resets 3pm"})), True),
-        # claude CLI 바이너리에 실제로 들어 있는 구독 한도 문구(2026-10 확인).
+        # claude CLI 바이너리 문자열로 조립되는 구독 한도 문구(2026-10 확인).
         (_out(1, json.dumps({"is_error": True, "result": "You've hit your session limit · resets 3pm"})), True),
         (_out(1, json.dumps({"is_error": True, "result": "You've reached your Fable limit"})), True),
         (_out(1, stderr="You've hit your monthly spend limit"), True),
+        (_out(1, stderr="You've hit your limit · resets 3pm"), True),
+        (_out(1, stderr="You've hit your org's monthly spend limit"), True),
         # 성공한 응답 본문에 '한도' 단어가 있어도 한도가 아니다(예: rate limit 미들웨어를 구현함).
         (_out(0, json.dumps({"is_error": False, "result": "implemented rate limit middleware"})), False),
         (_out(-1, stderr="timeout after 3600s"), False),
