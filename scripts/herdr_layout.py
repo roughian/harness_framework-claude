@@ -121,13 +121,14 @@ def _needs_decision(panes: list, phases, review) -> list:
     return items
 
 
-def render_recap(tabs: list, panes: list, own_tab: str, phases, review=None, story=None) -> str:
+def render_recap(tabs: list, panes: list, own_tab: str, phases, review=None, story=None, worktrees=()) -> str:
     """리캡 화면 텍스트. 쉬운 설명(story)과 사람이 정할 것을 맨 위에 두고, 오케스트레이터 탭(own_tab)을 뺀
     작업 탭별 pane 상태·phase 현황·최근 리뷰 요약을 보여준다."""
     lines = [f"리캡 {time.strftime('%H:%M:%S')}"]
     if story:
         lines += ["지금 무슨 일이 일어나고 있나요", *(f"  {line}" for line in story)]
     decisions = _needs_decision(panes, phases, review)
+    decisions += [f"  [{w['name']}] {item.strip()}" for w in worktrees for item in _needs_decision([], w["phases"], w["review"])]
     if decisions:
         lines += [""] * bool(story) + ["⚠ 사람이 정해야 해요:", *decisions]
     lines += ["", "── 자세히 ──"]
@@ -210,15 +211,42 @@ def _read_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
 
 
-def build_story(phases, review) -> list:
-    """쉬운 설명에 필요한 파일(진행 중 phase index, 리뷰 진행 상태, LESSONS)을 읽어 문장 목록을 만든다."""
+def _phase_story(root: Path, phases, review, now: datetime) -> list:
+    """root(메인 폴더나 worktree)의 진행 중 phase index와 리뷰 진행 상태를 읽어 쉬운 설명 문장을 만든다."""
     active = next((p for p in (phases or {}).get("phases", []) if p.get("status") != "completed"),
                   ((phases or {}).get("phases") or [None])[-1])
-    index = _read_json(ROOT / "phases" / active["dir"] / "index.json") if active else None
-    story = recap_story.explain(phases, index, review[1] if review else None, _read_json(REVIEW_STATUS),
-                                datetime.now().astimezone())
+    index = _read_json(root / "phases" / active["dir"] / "index.json") if active else None
+    status = _read_json(REVIEW_STATUS if root == ROOT else root / ".review" / "status.json")
+    return recap_story.explain(phases, index, review[1] if review else None, status, now)
+
+
+def build_story(phases, review) -> list:
+    """메인 폴더의 쉬운 설명. LESSONS가 너무 길면 경고를 붙인다."""
+    story = _phase_story(ROOT, phases, review, datetime.now().astimezone())
     warning = recap_story.lessons_warning(LESSONS_FILE.read_text(encoding="utf-8")) if LESSONS_FILE.exists() else None
     return story + ([f"⚠ {warning}"] if warning else [])
+
+
+def load_worktrees(root: Path) -> list:
+    """메인 폴더 밖의 git worktree 중 phase가 있는 것: {name(브랜치), path, phases, review}."""
+    r = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=root, capture_output=True, text=True)
+    if r.returncode != 0:
+        return []
+    out = []
+    for block in r.stdout.strip().split("\n\n"):
+        fields = dict(line.split(" ", 1) for line in block.splitlines() if " " in line)
+        path = Path(fields.get("worktree", ""))
+        phases = _read_json(path / "phases" / "index.json")
+        if path.resolve() == root.resolve() or not phases:
+            continue
+        name = fields.get("branch", "").removeprefix("refs/heads/") or path.name
+        out.append({"name": name, "path": path, "phases": phases, "review": latest_review(path)})
+    return out
+
+
+def worktree_story(worktrees: list, now: datetime) -> list:
+    """worktree마다 쉬운 설명을 [브랜치] 머리말을 붙여 이어 붙인다."""
+    return [f"[{w['name']}] {line}" for w in worktrees for line in _phase_story(w["path"], w["phases"], w["review"], now)]
 
 
 def recap_text(workspace: str, own_tab: str) -> str:
@@ -227,7 +255,9 @@ def recap_text(workspace: str, own_tab: str) -> str:
         tabs = _herdr_json("tab", "list", "--workspace", workspace)["tabs"]
         phases = _read_json(PHASES_INDEX)
         review = latest_review(ROOT)
-        return render_recap(tabs, _list_panes(workspace), own_tab, phases, review, build_story(phases, review))
+        worktrees = load_worktrees(ROOT)
+        story = build_story(phases, review) + worktree_story(worktrees, datetime.now().astimezone())
+        return render_recap(tabs, _list_panes(workspace), own_tab, phases, review, story, worktrees)
     except Exception as err:  # noqa: BLE001 — 파일이 쓰이는 중이거나 herdr 일시 오류: 다음 주기에 회복된다
         return f"리캡 갱신 실패 ({type(err).__name__}: {err}). {RECAP_INTERVAL_SEC}초 뒤 다시 시도합니다."
 

@@ -277,3 +277,40 @@ class TestBuildStory:
         story = hl.build_story({"phases": [{"dir": "1-api", "status": "pending"}]}, None)
         assert "'routes'" in story[0]
         assert story[-1].startswith("⚠ 실수 기록장")
+
+
+class TestWorktrees:
+    """병렬 phase는 다른 worktree에서 돌고 상태 파일도 그쪽에 쓴다. 리캡 하나에 모아 보여 준다."""
+
+    @staticmethod
+    def _worktree(path, status="pending"):
+        (path / "phases" / "1-api").mkdir(parents=True)
+        (path / "phases" / "index.json").write_text(json.dumps({"phases": [{"dir": "1-api", "status": status}]}))
+        (path / "phases" / "1-api" / "index.json").write_text(json.dumps(
+            {"phase": "api", "blocked_reason": "review: 차단 1건",
+             "steps": [{"step": 0, "name": "routes", "status": "pending"}]}))
+
+    def _load(self, tmp_path, status="pending"):
+        main, wt, bare = tmp_path / "main", tmp_path / "wt-api", tmp_path / "wt-empty"
+        for p in (main, wt, bare):
+            p.mkdir()
+        self._worktree(wt, status)
+        porcelain = (f"worktree {main}\nHEAD a\nbranch refs/heads/main\n\n"
+                     f"worktree {wt}\nHEAD b\nbranch refs/heads/feat-api\n\n"
+                     f"worktree {bare}\nHEAD c\ndetached\n\n")
+        done = MagicMock(returncode=0, stdout=porcelain)
+        with patch.object(hl.subprocess, "run", return_value=done):
+            return hl.load_worktrees(main)
+
+    def test_lists_other_worktrees_with_phases_by_branch(self, tmp_path):
+        worktrees = self._load(tmp_path)
+        assert [w["name"] for w in worktrees] == ["feat-api"]
+
+    def test_story_shows_each_worktree_phase(self, tmp_path):
+        story = hl.worktree_story(self._load(tmp_path), hl.datetime.now().astimezone())
+        assert story[0].startswith("[feat-api]") and "'routes'" in story[0]
+
+    def test_blocked_worktree_phase_needs_decision(self, tmp_path):
+        text = hl.render_recap([], [], "t1", None, worktrees=self._load(tmp_path, status="blocked"))
+        decisions = text[text.index("⚠ 사람이 정해야 해요"):text.index("── 자세히")]
+        assert "[feat-api]" in decisions and "1-api" in decisions

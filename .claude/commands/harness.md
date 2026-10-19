@@ -183,7 +183,7 @@ worker·reviewer 모델도 고정하지 않는다. 오케스트레이터가 실�
 herdr 화면 배치 (herdr 안일 때):
 - 작업을 시작하면 먼저 `python3 scripts/herdr_layout.py setup`을 실행한다. 이 세션 pane 이름이 "오케스트레이션"이 되고, 오른쪽에 "리캡" pane이 열린다.
   - **탭1에는 오케스트레이션과 리캡만 둔다.** 사람이 보는 곳이다.
-  - 리캡은 5초마다 갱신한다. 맨 위 "지금 무슨 일이 일어나고 있나요" 절은 고등학생도 읽을 수 있는 문장으로 진행 단계, 검사 중인 AI 수와 경과 시간, 찾은 문제와 예시, 위험도 이유, 걸린 시간을 보여 준다(`scripts/recap_story.py`). 그 아래 "⚠ 사람이 정해야 해요" 칸에 입력을 기다리는 pane, 멈춘 phase, 남은 차단 지적, 실패한 검사관, LESSONS 정리 필요를 모은다. "자세히" 아래에는 작업 탭별 pane 상태, `phases/index.json` 현황, 최근 리뷰 결과를 보여 준다.
+  - 리캡은 5초마다 갱신한다. 맨 위 "지금 무슨 일이 일어나고 있나요" 절은 고등학생도 읽을 수 있는 문장으로 진행 단계, 검사 중인 AI 수와 경과 시간, 찾은 문제와 예시, 위험도 이유, 걸린 시간을 보여 준다(`scripts/recap_story.py`). 다른 git worktree에서 도는 phase도 `[브랜치]` 머리말을 붙여 같은 절에 보여 준다(`git worktree list`로 찾는다). 그 아래 "⚠ 사람이 정해야 해요" 칸에 입력을 기다리는 pane, 멈춘 phase, 남은 차단 지적, 실패한 검사관, LESSONS 정리 필요를 모은다. "자세히" 아래에는 작업 탭별 pane 상태, `phases/index.json` 현황, 최근 리뷰 결과를 보여 준다.
 - 작업 pane(phase 실행, 병렬 worker)은 `herdr pane split`을 직접 쓰지 말고 `python3 scripts/herdr_layout.py split --cwd <경로> --label <이름>`으로 연다(새 pane_id 출력).
   - "작업 1", "작업 2" … 탭에 **탭당 최대 8개**(2행×4열 격자)로 들어간다. 다 차면 다음 탭을 만든다. 포커스는 옮기지 않는다.
   - `--label`은 리캡에 표시되므로 `phase:1-api`처럼 무엇을 하는지 적는다.
