@@ -641,3 +641,40 @@ class TestGit:
         run("add", "latin1.txt")
         monkeypatch.setattr(rv, "ROOT", tmp_path)
         assert "latin1.txt" in rv._git("diff", "--cached")
+
+
+class TestPassedSurvivesRebase:
+    @staticmethod
+    def _repo(tmp_path, monkeypatch):
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True).stdout.strip()
+        git("init", "-q")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base")
+        monkeypatch.setattr(rv, "ROOT", tmp_path)
+        monkeypatch.setattr(rv, "PASSED_FILE", tmp_path / "passed")
+        return git
+
+    @staticmethod
+    def _commit(git, tmp_path, name, text):
+        (tmp_path / name).write_text(text)
+        git("add", name)
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", name)
+        return git("rev-parse", "HEAD")
+
+    def test_rebased_range_with_same_diff_is_still_passed(self, tmp_path, monkeypatch):
+        # rebase하면 커밋 해시가 모두 바뀐다. 변경 내용이 같으면 다시 리뷰하지 않는다.
+        git = self._repo(tmp_path, monkeypatch)
+        base = git("rev-parse", "HEAD")
+        feature = self._commit(git, tmp_path, "f.py", "x = 1\n")
+        rv.record_passed(base, feature)
+        git("checkout", "-q", "-b", "other", base)
+        new_base = self._commit(git, tmp_path, "unrelated.py", "y = 2\n")
+        rebased = self._commit(git, tmp_path, "f.py", "x = 1\n")
+        assert rv.is_passed(new_base, rebased)
+
+    def test_changed_diff_after_rebase_is_not_passed(self, tmp_path, monkeypatch):
+        git = self._repo(tmp_path, monkeypatch)
+        base = git("rev-parse", "HEAD")
+        rv.record_passed(base, self._commit(git, tmp_path, "f.py", "x = 1\n"))
+        git("checkout", "-q", "-b", "other", base)
+        assert not rv.is_passed(base, self._commit(git, tmp_path, "f.py", "x = 2\n"))

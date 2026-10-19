@@ -387,15 +387,26 @@ def is_ancestor(ancestor: str, descendant: str) -> bool:
     return r.returncode == 0
 
 
+def range_patch_id(base: str, head: str) -> str:
+    """base..head 변경 내용의 지문. rebase로 커밋 해시가 바뀌어도 diff가 같으면 같다. 구할 수 없으면 빈 문자열."""
+    diff = subprocess.run(["git", "diff", base, head], cwd=ROOT, capture_output=True, text=True)
+    if diff.returncode != 0 or not diff.stdout:
+        return ""
+    r = subprocess.run(["git", "patch-id", "--stable"], cwd=ROOT, input=diff.stdout, capture_output=True, text=True)
+    return r.stdout.split()[0] if r.stdout.split() else ""
+
+
 def is_passed(base: str, head: str) -> bool:
-    """base..head 범위가 이미 통과한 리뷰 범위 안에 있는가. 기록은 '리뷰 기준 커밋 head' 한 줄씩이다."""
+    """base..head 범위가 이미 통과한 리뷰 범위 안에 있는가. 기록은 '리뷰 기준 커밋 head [patch-id]' 한 줄씩이다.
+    커밋이 같지 않아도 변경 내용(patch-id)이 같으면 통과로 본다. rebase 뒤 같은 diff를 다시 리뷰하지 않기 위해서다."""
     if not PASSED_FILE.exists():
         return False
-    for line in PASSED_FILE.read_text().splitlines():
-        parts = line.split()
-        if len(parts) == 2 and parts[1] == head and (parts[0] == base or is_ancestor(parts[0], base)):
+    records = [line.split() for line in PASSED_FILE.read_text().splitlines()]
+    for parts in records:
+        if len(parts) >= 2 and parts[1] == head and (parts[0] == base or is_ancestor(parts[0], base)):
             return True
-    return False
+    patch_ids = {parts[2] for parts in records if len(parts) == 3}
+    return bool(patch_ids) and range_patch_id(base, head) in patch_ids
 
 
 def archive_result(result: dict, head: str):
@@ -411,7 +422,7 @@ def record_passed(base: str, head: str):
     if not is_passed(base, head):
         PASSED_FILE.parent.mkdir(parents=True, exist_ok=True)
         with PASSED_FILE.open("a") as f:
-            f.write(f"{base} {head}\n")
+            f.write(" ".join(filter(None, [base, head, range_patch_id(base, head)])) + "\n")
 
 
 # ---------- 실행 ----------
