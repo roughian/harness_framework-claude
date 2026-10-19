@@ -143,6 +143,18 @@ def findings_table(findings: list) -> str:
     return "\n".join(rows)
 
 
+def finding_details(findings: list) -> list:
+    """지적마다 근거·수정안(body)과 재현 방법을 펼침 블록으로 만든다. 표 뒤에 두어 길이 상한에서 먼저 잘린다."""
+    out = []
+    for f in findings:
+        out += [f"<details><summary>P{f['priority']} {f['file']}:{f['line_start']} — {f['title']}</summary>", "",
+                f"**근거·수정안**: {f['body']}", ""]
+        if f.get("repro"):
+            out += [f"**재현**: `{f['repro']}`", ""]
+        out.append("</details>")
+    return out
+
+
 def _decisions(merged: dict, plan: dict) -> list:
     items = [f"차단 지적 {merged['blocking']}건: 고친 뒤 다시 push하면 고친 부분만 검증한다."] if merged["blocking"] else []
     if plan["adr_missing"]:
@@ -163,7 +175,8 @@ def build_comment(merged: dict, plan: dict, stats: tuple) -> str:
             f"- 변경 규모: 파일 {stats[0]}개, {stats[1]}줄"]
     if plan["auto_merge_candidate"]:
         out.append("- 1명 승인 시 auto-merge 후보")
-    out += ["", *merged["summaries"].values(), "", "## 지적", findings_table(merged["findings"])]
+    out += ["", *merged["summaries"].values(), "", "## 지적", findings_table(merged["findings"]), "",
+            *finding_details(merged["findings"])]
     return "\n".join(out)[:MAX_COMMENT_CHARS]
 
 

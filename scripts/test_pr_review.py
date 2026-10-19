@@ -199,6 +199,15 @@ def test_comment_orders_decisions_first():
     assert body.index("## 결정 필요") < body.index("## 요약") < body.index("## 지적")
 
 
+def test_comment_details_each_finding_with_reason_and_fix():
+    # 표에는 제목만 들어간다. 사람이 판단하려면 리뷰어가 쓴 근거·수정안(body)과 재현 방법이 지적마다 보여야 한다.
+    finding = {**_finding(1, True), "body": "None이면 KeyError. get()으로 바꿔라"}
+    merged = _merged([finding])
+    body = pr.build_comment(merged, pr.plan_actions("low", merged, "", {}), stats=(1, 3))
+    details = body[body.index("<details>"):]
+    assert "a.py:3" in details and "None이면 KeyError. get()으로 바꿔라" in details and "pytest a" in details
+
+
 # ---------- 점수·계획 ----------
 
 def test_scope_score_is_monotonic_between_bounds():
