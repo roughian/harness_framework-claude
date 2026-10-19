@@ -610,3 +610,14 @@ class TestFixPromptSameKind:
     def test_asks_to_fix_every_place_of_same_kind(self):
         merged = rv.merge({"claude": _result([_finding(priority=0)])}, failed={})
         assert "같은 종류의 문제가 있는 모든 자리" in rv.build_fix_prompt(merged, project="P")
+
+
+class TestGit:
+    def test_non_utf8_diff_does_not_crash(self, tmp_path, monkeypatch):
+        run = lambda *a: subprocess.run(["git", *a], cwd=tmp_path, check=True, capture_output=True)
+        run("init", "-q")
+        run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init")
+        (tmp_path / "latin1.txt").write_bytes(b"caf\xe9\n")
+        run("add", "latin1.txt")
+        monkeypatch.setattr(rv, "ROOT", tmp_path)
+        assert "latin1.txt" in rv._git("diff", "--cached")

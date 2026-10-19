@@ -75,7 +75,8 @@ def risk_level(score: int) -> str:
 # ---------- git ----------
 
 def _git(*args) -> str:
-    r = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+    # diff 본문에는 UTF-8이 아닌 파일이 섞일 수 있다. 깨진 바이트는 대체 문자로 읽는다.
+    r = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode != 0:
         raise ReviewError(f"git {' '.join(args[:2])} 실패: {r.stderr.strip()}")
     return r.stdout
