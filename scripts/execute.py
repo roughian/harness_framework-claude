@@ -578,7 +578,9 @@ class StepExecutor:
     def _fix_review_findings(self, result: dict):
         prompt = review.build_fix_prompt(result, self._project)
         with progress_indicator("리뷰 지적 수정"):
-            self._wait_out_limit(lambda: self._output(self._run_claude(prompt)))
+            output = self._wait_out_limit(lambda: self._output(self._run_claude(prompt)))
+        if is_usage_limited(output):
+            self._block_phase("review: 수정 세션이 사용량 한도로 limit_wait 안에 돌지 못했다. 한도가 풀린 뒤 다시 실행")
         self._run_git("add", "-A")
         if self._run_git("diff", "--cached", "--quiet").returncode != 0:
             self._run_git("commit", "-m", self.FIX_MSG.format(phase=self._phase_name))

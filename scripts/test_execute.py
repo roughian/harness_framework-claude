@@ -847,6 +847,18 @@ class TestUsageLimit:
             executor._fix_review_findings({})
         assert run.call_count == 2 and sleep.call_args_list[0].args[0] == 300
 
+    def test_review_fix_limit_that_never_clears_blocks_phase(self, executor):
+        # 한도가 끝내 안 풀리면 고치지 못한 채 재리뷰로 넘어가지 않고 phase를 멈춘다.
+        executor._config["timeouts_sec"]["limit_wait"] = 0
+        limited = subprocess.CompletedProcess("claude", 1, "", "Claude AI usage limit reached|1760000000")
+        executor._run_git = MagicMock()
+        with patch.object(executor, "_run_claude", return_value=limited), \
+             patch.object(ex.review, "build_fix_prompt", return_value="fix"), \
+             patch.object(executor, "_block_phase", side_effect=SystemExit(2)) as block, pytest.raises(SystemExit):
+            executor._fix_review_findings({})
+        assert "사용량 한도" in block.call_args.args[0]
+        executor._run_git.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # 고정 AC: execute.py가 AC를 직접 돌리고, 오케스트레이터가 쓴 AC 파일이 그대로인지 본다
@@ -960,6 +972,17 @@ class TestExecuteSingleStepWiring:
             executor._execute_single_step({"step": 2, "name": "ui"})
         assert exc.value.code == 2
         assert json.loads((phase_dir / "index.json").read_text())["steps"][2]["status"] == "blocked"
+
+    def test_limit_after_worker_completed_keeps_completed(self, executor, phase_dir):
+        # worker가 completed를 쓴 뒤 한도로 끝났으면 그 기록을 blocked로 덮지 않는다.
+        executor._run_git = _git()
+        def invoke(step, preamble):
+            _set_status(phase_dir, status="completed", summary="done")
+            return LIMITED
+        with patch.object(executor, "_invoke_until_unlimited", side_effect=invoke), \
+             patch.object(executor, "_record_progress"):
+            assert executor._execute_single_step({"step": 2, "name": "ui"}) is True
+        assert json.loads((phase_dir / "index.json").read_text())["steps"][2]["status"] == "completed"
 
     def test_ac_failure_feeds_next_attempt(self, executor, phase_dir):
         executor._run_git = _git()
