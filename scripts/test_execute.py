@@ -801,6 +801,8 @@ class TestUsageLimit:
         (_out(1, stderr="You've hit your monthly spend limit"), True),
         (_out(1, stderr="You've hit your limit · resets 3pm"), True),
         (_out(1, stderr="You've hit your org's monthly spend limit"), True),
+        (_out(1, stderr="You're out of usage credits · resets 3pm"), True),
+        (_out(1, stderr="You're out of extra usage"), True),
         # 성공한 응답 본문에 '한도' 단어가 있어도 한도가 아니다(예: rate limit 미들웨어를 구현함).
         (_out(0, json.dumps({"is_error": False, "result": "implemented rate limit middleware"})), False),
         (_out(-1, stderr="timeout after 3600s"), False),

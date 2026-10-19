@@ -27,7 +27,7 @@ import review
 ROOT = Path(__file__).resolve().parent.parent
 SELECTION_MAX_AGE_DAYS = 7
 LIMIT_PATTERN = re.compile(
-    r"usage limit|limit reached|rate.?limit|\b429\b|(?:hit|reached) your(?: [\w'-]+){0,3} limit", re.IGNORECASE
+    r"usage limit|limit reached|rate.?limit|\b429\b|(?:hit|reached) your(?: [\w'-]+){0,3} limit|out of (?:[\w-]+ )?usage", re.IGNORECASE
 )
 
 
