@@ -678,3 +678,21 @@ class TestPassedSurvivesRebase:
         rv.record_passed(base, self._commit(git, tmp_path, "f.py", "x = 1\n"))
         git("checkout", "-q", "-b", "other", base)
         assert not rv.is_passed(base, self._commit(git, tmp_path, "f.py", "x = 2\n"))
+
+    def test_indent_only_change_is_not_passed(self, tmp_path, monkeypatch):
+        # 파이썬은 들여쓰기가 뜻을 바꾼다. 공백을 지우고 비교하면 다른 코드를 통과로 본다.
+        git = self._repo(tmp_path, monkeypatch)
+        base = git("rev-parse", "HEAD")
+        rv.record_passed(base, self._commit(git, tmp_path, "f.py", "if a:\n    x()\n    return 1\n"))
+        git("checkout", "-q", "-b", "other", base)
+        assert not rv.is_passed(base, self._commit(git, tmp_path, "f.py", "if a:\n    x()\nreturn 1\n"))
+
+    def test_non_utf8_diff_does_not_crash(self, tmp_path, monkeypatch):
+        git = self._repo(tmp_path, monkeypatch)
+        base = git("rev-parse", "HEAD")
+        (tmp_path / "latin1.txt").write_bytes(b"caf\xe9\n")
+        git("add", "latin1.txt")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "latin1")
+        head = git("rev-parse", "HEAD")
+        rv.record_passed(base, head)
+        assert rv.is_passed(base, head)

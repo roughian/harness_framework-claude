@@ -65,6 +65,12 @@ def test_existing_branch_reviews_remote_to_local():
     assert review[review.index("--head") + 1] == LOCAL
 
 
+def test_rebased_branch_reviews_from_main_not_old_remote_head():
+    # rebase 뒤 push(원격 head가 조상이 아님)는 옛 head→새 head 비교에 upstream 변경이 섞인다. main 기준으로 본다.
+    _, (review,) = _push(f"refs/heads/x {LOCAL} refs/heads/x {REMOTE}\n", is_ancestor=False)
+    assert review[review.index("--base") + 1] == "c" * 40
+
+
 def test_already_passed_range_is_not_reviewed_again():
     # execute.py 게이트나 이전 push가 통과시킨 범위는 다시 리뷰하지 않는다.
     gate.review.record_passed(REMOTE, LOCAL)

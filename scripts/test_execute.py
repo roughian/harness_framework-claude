@@ -827,10 +827,11 @@ class TestUsageLimit:
 AC_STEP = {"step": 2, "name": "ui", "ac": "pytest tests/ac", "ac_files": ["tests/ac/test_ui.py"]}
 
 
-def _git(diff_code=0):
+def _git(diff_code=0, checkout_code=0, cat_code=0, head="head1"):
+    codes = {("diff", "--quiet"): diff_code, ("checkout",): checkout_code, ("cat-file",): cat_code}
     def run(*args):
-        code = diff_code if args[:2] == ("diff", "--quiet") else 0
-        return subprocess.CompletedProcess(["git", *args], code, "", "")
+        code = codes.get(args[:2], codes.get(args[:1], 0))
+        return subprocess.CompletedProcess(["git", *args], code, head + "\n" if args[0] == "rev-parse" else "", "")
     return MagicMock(side_effect=run)
 
 
@@ -884,6 +885,37 @@ class TestFixedAc:
             status, err = executor._judge_attempt(AC_STEP, "start")
         assert status == "error" and err == "arch rule broken"
         run.assert_not_called()
+
+    def test_ac_base_is_fixed_at_first_run(self, executor, phase_dir):
+        # 실행마다 HEAD를 기준으로 잡으면, 앞선 실행에서 커밋된 AC 수정이 새 기준이 되어 검출되지 않는다.
+        executor._run_git = _git(head="first")
+        assert executor._ac_base() == "first"
+        executor._run_git = _git(head="later")
+        assert executor._ac_base() == "first"
+        assert json.loads((phase_dir / "index.json").read_text())["ac_base"] == "first"
+
+    def test_edited_ac_is_restored_even_when_worker_reports_error(self, executor, phase_dir):
+        # error 분기의 커밋이 고친 AC 파일을 담지 않도록 status와 관계없이 먼저 되돌린다.
+        _set_status(phase_dir, status="error", error_message="x")
+        executor._run_git = _git(diff_code=1)
+        with _ac_run(0):
+            status, _ = executor._judge_attempt(AC_STEP, "start")
+        assert status == "error"
+        executor._run_git.assert_any_call("checkout", "start", "--", "tests/ac/test_ui.py")
+
+    def test_failed_restore_is_reported(self, executor):
+        executor._run_git = _git(diff_code=1, checkout_code=1)
+        with _ac_run():
+            assert "되돌리지 못했다" in executor._verify_ac(AC_STEP, "start")
+
+    def test_uncommitted_ac_file_blocks_before_running_worker(self, executor, phase_dir):
+        executor._run_git = _git(cat_code=1)
+        with patch.object(executor, "_invoke_until_unlimited") as invoke, \
+             patch.object(executor, "_record_progress"), pytest.raises(SystemExit) as exc:
+            executor._execute_single_step(AC_STEP)
+        assert exc.value.code == 2 and not invoke.called
+        step = json.loads((phase_dir / "index.json").read_text())["steps"][2]
+        assert step["status"] == "blocked" and "tests/ac/test_ui.py" in step["blocked_reason"]
 
     def test_prompt_lists_fixed_ac_files(self, executor, phase_dir):
         (phase_dir / "step2.md").write_text("# Step 2")

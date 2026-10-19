@@ -227,8 +227,18 @@ def build_story(phases, review) -> list:
     return story + ([f"⚠ {warning}"] if warning else [])
 
 
+def _branch_phase(path: Path, phases: dict, branch: str):
+    """worktree 브랜치가 돌리는 phase. execute.py는 phase마다 feat-<phase 이름> 브랜치에서 돈다."""
+    for phase in phases.get("phases", []):
+        index = _read_json(path / "phases" / phase["dir"] / "index.json") or {}
+        if branch == f"feat-{index.get('phase', phase['dir'])}":
+            return phase
+    return None
+
+
 def load_worktrees(root: Path) -> list:
-    """메인 폴더 밖의 git worktree 중 phase가 있는 것: {name(브랜치), path, phases, review}."""
+    """메인 폴더 밖에서 phase를 돌리는 git worktree: {name(브랜치), path, phases(그 phase만), review}.
+    worktree에는 top index 전체가 복제되므로 브랜치로 그 worktree의 phase를 고른다. 맞는 phase가 없으면 뺀다."""
     r = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=root, capture_output=True, text=True)
     if r.returncode != 0:
         return []
@@ -236,11 +246,11 @@ def load_worktrees(root: Path) -> list:
     for block in r.stdout.strip().split("\n\n"):
         fields = dict(line.split(" ", 1) for line in block.splitlines() if " " in line)
         path = Path(fields.get("worktree", ""))
+        branch = fields.get("branch", "").removeprefix("refs/heads/")
         phases = _read_json(path / "phases" / "index.json")
-        if path.resolve() == root.resolve() or not phases:
-            continue
-        name = fields.get("branch", "").removeprefix("refs/heads/") or path.name
-        out.append({"name": name, "path": path, "phases": phases, "review": latest_review(path)})
+        phase = _branch_phase(path, phases, branch) if phases and path.resolve() != root.resolve() else None
+        if phase:
+            out.append({"name": branch, "path": path, "phases": {"phases": [phase]}, "review": latest_review(path)})
     return out
 
 

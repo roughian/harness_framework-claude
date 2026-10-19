@@ -326,12 +326,32 @@ class StepExecutor:
                 "execute.py가 끝난 뒤 AC를 직접 다시 돌리고 이 파일이 바뀌었는지 확인한다.\n"
                 + "".join(f"- {f}\n" for f in files) + "\n")
 
-    def _verify_ac(self, step: dict, start: str) -> Optional[str]:
-        """고정 AC를 직접 확인한다. 통과하면 None, 아니면 다음 시도에 넘길 에러."""
+    def _ac_base(self) -> str:
+        """고정 AC 비교 기준 커밋. phase 첫 실행 때 한 번만 정해 index.json에 남긴다.
+        실행마다 HEAD로 잡으면 앞 실행·앞 step에서 커밋된 AC 수정이 새 기준이 되어 검출되지 않는다."""
+        index = self._read_json(self._index_file)
+        if "ac_base" not in index:
+            index["ac_base"] = self._run_git("rev-parse", "HEAD").stdout.strip()
+            self._write_json(self._index_file, index)
+        return index["ac_base"]
+
+    def _uncommitted_ac_files(self, step: dict, base: str) -> list:
+        return [f for f in step.get("ac_files") or [] if self._run_git("cat-file", "-e", f"{base}:{f}").returncode != 0]
+
+    def _restore_ac_files(self, step: dict, base: str) -> Optional[str]:
+        """worker가 AC 파일을 고쳤으면 기준 커밋으로 되돌리고 에러를 돌려준다."""
         files = step.get("ac_files") or []
-        if files and self._run_git("diff", "--quiet", start, "--", *files).returncode != 0:
-            self._run_git("checkout", start, "--", *files)
-            return f"고정 AC 파일을 고쳤다(되돌림): {', '.join(files)}. AC 파일은 그대로 두고 구현을 고쳐라."
+        if not files or self._run_git("diff", "--quiet", base, "--", *files).returncode == 0:
+            return None
+        if self._run_git("checkout", base, "--", *files).returncode != 0:
+            return f"고정 AC 파일이 바뀌었는데 되돌리지 못했다: {', '.join(files)}. 사람이 확인해야 한다."
+        return f"고정 AC 파일을 고쳤다(되돌림): {', '.join(files)}. AC 파일은 그대로 두고 구현을 고쳐라."
+
+    def _verify_ac(self, step: dict, base: str) -> Optional[str]:
+        """고정 AC를 직접 확인한다. 통과하면 None, 아니면 다음 시도에 넘길 에러."""
+        return self._restore_ac_files(step, base) or self._run_ac(step)
+
+    def _run_ac(self, step: dict) -> Optional[str]:
         if not step.get("ac"):
             return None
         try:
@@ -343,6 +363,13 @@ class StepExecutor:
             return None
         return f"execute.py가 AC를 직접 돌렸더니 실패 ({step['ac']}):\n{(r.stdout + r.stderr)[-self.AC_OUTPUT_TAIL_CHARS:]}"
 
+    def _block_step(self, step_num: int, step_name: str, reason: str):
+        self._set_step(step_num, status="blocked", blocked_reason=reason, blocked_at=self._stamp())
+        print(f"  ⏸ Step {step_num}: {step_name} blocked\n    Reason: {reason}")
+        self._update_top_index("blocked")
+        self._record_progress("blocked", f"step {step_num} {step_name} — {reason}")
+        sys.exit(2)
+
     def _set_step(self, step_num: int, **fields):
         index = self._read_json(self._index_file)
         for s in index["steps"]:
@@ -350,15 +377,17 @@ class StepExecutor:
                 s.update(fields)
         self._write_json(self._index_file, index)
 
-    def _judge_attempt(self, step: dict, start: str) -> tuple:
+    def _judge_attempt(self, step: dict, base: str) -> tuple:
         """한 시도의 결과를 (status, 에러)로 판정한다."""
         step_num = step["step"]
         current = next(s for s in self._read_json(self._index_file)["steps"] if s["step"] == step_num)
         status = current.get("status", "pending")
         err = current.get("error_message", "Step did not update status")
+        # status와 관계없이 먼저 되돌린다. error 분기의 커밋이 고친 AC 파일을 담으면 안 된다.
+        files_error = self._restore_ac_files(step, base)
         if status in ("blocked", "error") or not (step.get("ac") or step.get("ac_files")):
             return status, err
-        ac_error = self._verify_ac(step, start)
+        ac_error = files_error or self._run_ac(step)
         if ac_error:
             return "failed", ac_error
         if status == "completed" or not step.get("ac"):
@@ -420,7 +449,11 @@ class StepExecutor:
         step_num, step_name = step["step"], step["name"]
         done = sum(1 for s in self._read_json(self._index_file)["steps"] if s["status"] == "completed")
         prev_error = None
-        start = self._run_git("rev-parse", "HEAD").stdout.strip()
+        base = self._ac_base()
+        missing = self._uncommitted_ac_files(step, base)
+        if missing:
+            self._block_step(step_num, step_name, f"고정 AC 파일이 기준 커밋({base[:7]})에 없음: {', '.join(missing)}. "
+                             "커밋하고 index.json의 ac_base를 지운 뒤 다시 실행")
 
         for attempt in range(1, self.MAX_RETRIES + 1):
             index = self._read_json(self._index_file)
@@ -438,7 +471,7 @@ class StepExecutor:
             if is_usage_limited(output):
                 self._set_step(step_num, status="blocked",
                                blocked_reason="사용량 한도가 limit_wait 안에 풀리지 않음. 풀린 뒤 pending으로 바꿔 다시 실행")
-            status, err_msg = self._judge_attempt(step, start)
+            status, err_msg = self._judge_attempt(step, base)
             index = self._read_json(self._index_file)
             ts = self._stamp()
 

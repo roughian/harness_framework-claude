@@ -314,3 +314,25 @@ class TestWorktrees:
         text = hl.render_recap([], [], "t1", None, worktrees=self._load(tmp_path, status="blocked"))
         decisions = text[text.index("⚠ 사람이 정해야 해요"):text.index("── 자세히")]
         assert "[feat-api]" in decisions and "1-api" in decisions
+
+    def test_worktree_shows_the_phase_its_branch_runs(self, tmp_path):
+        # 병렬 worktree에는 top index 전체가 복제된다. 첫 미완료가 아니라 브랜치(feat-<phase>)의 phase를 보여 준다.
+        main, wt, other = tmp_path / "main", tmp_path / "wt-ui", tmp_path / "wt-old"
+        for p in (main, wt, other):
+            p.mkdir()
+            self._worktree(p)
+            (p / "phases" / "2-ui").mkdir()
+            (p / "phases" / "2-ui" / "index.json").write_text(json.dumps(
+                {"phase": "ui", "steps": [{"step": 0, "name": "screens", "status": "pending"}]}))
+            (p / "phases" / "index.json").write_text(json.dumps(
+                {"phases": [{"dir": "1-api", "status": "blocked"}, {"dir": "2-ui", "status": "pending"}]}))
+        porcelain = (f"worktree {main}\nbranch refs/heads/main\n\n"
+                     f"worktree {wt}\nbranch refs/heads/feat-ui\n\n"
+                     f"worktree {other}\nbranch refs/heads/spike\n\n")
+        with patch.object(hl.subprocess, "run", return_value=MagicMock(returncode=0, stdout=porcelain)):
+            worktrees = hl.load_worktrees(main)
+        assert [w["name"] for w in worktrees] == ["feat-ui"]
+        story = hl.worktree_story(worktrees, hl.datetime.now().astimezone())
+        assert "'screens'" in story[0] and "'routes'" not in " ".join(story)
+        # main에서 이미 보이는 1-api의 멈춤을 worktree 머리말로 중복해 내지 않는다.
+        assert "1-api" not in hl.render_recap([], [], "t1", None, worktrees=worktrees)

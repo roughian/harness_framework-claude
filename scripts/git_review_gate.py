@@ -42,8 +42,10 @@ def _commit_of(sha: str) -> str:
 
 def _push_base(local_sha: str, remote_sha: str) -> str:
     """리뷰 범위의 시작점. 찾지 못하면 빈 문자열."""
-    if remote_sha != ZERO_SHA:
-        return _commit_of(remote_sha)
+    remote = _commit_of(remote_sha) if remote_sha != ZERO_SHA else ""
+    # rebase 뒤 push면 원격 head가 조상이 아니다. 옛 head→새 head 비교에는 upstream 변경이 섞이므로 새 브랜치처럼 본다.
+    if remote and review.is_ancestor(remote, local_sha):
+        return remote
     for candidate in BASE_CANDIDATES:
         r = _git("merge-base", local_sha, candidate)
         if r.returncode == 0 and r.stdout.strip():

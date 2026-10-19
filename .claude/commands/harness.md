@@ -81,7 +81,7 @@ ARCHITECTURE는 CLAUDE.md import로 이미 로드되어 있다. 추가로 읽을
 - `steps[].step`: 0부터 시작하는 순번.
 - `steps[].name`: kebab-case slug.
 - `steps[].status`: 초기값은 모두 `"pending"`.
-- `steps[].ac`, `steps[].ac_files`: 고정 AC(C절 9번). 선택 항목이다. `ac_files`는 phase 실행 전에 커밋되어 있어야 한다(step 시작 커밋과 비교한다).
+- `steps[].ac`, `steps[].ac_files`: 고정 AC(C절 9번). 선택 항목이다. `ac_files`는 phase 실행 전에 커밋되어 있어야 한다(phase 첫 실행 때 기록한 `ac_base` 커밋과 비교한다. 없으면 step을 blocked로 둔다).
 - `review`: `{risk_score, risk_level, blocking, rounds}`. 리뷰 게이트가 끝나면 execute.py가 기록한다. 생성 시 넣지 않는다.
 
 상태 전이와 자동 기록 필드:

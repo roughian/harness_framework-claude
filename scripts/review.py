@@ -388,12 +388,14 @@ def is_ancestor(ancestor: str, descendant: str) -> bool:
 
 
 def range_patch_id(base: str, head: str) -> str:
-    """base..head 변경 내용의 지문. rebase로 커밋 해시가 바뀌어도 diff가 같으면 같다. 구할 수 없으면 빈 문자열."""
-    diff = subprocess.run(["git", "diff", base, head], cwd=ROOT, capture_output=True, text=True)
+    """base..head 변경 내용의 지문. rebase로 커밋 해시가 바뀌어도 diff가 같으면 같다. 구할 수 없으면 빈 문자열.
+    diff는 bytes 그대로 넘긴다(비 UTF-8 파일). --verbatim은 공백을 지우지 않는다(들여쓰기만 바뀐 코드는 다른 코드다)."""
+    diff = subprocess.run(["git", "diff", base, head], cwd=ROOT, capture_output=True)
     if diff.returncode != 0 or not diff.stdout:
         return ""
-    r = subprocess.run(["git", "patch-id", "--stable"], cwd=ROOT, input=diff.stdout, capture_output=True, text=True)
-    return r.stdout.split()[0] if r.stdout.split() else ""
+    r = subprocess.run(["git", "patch-id", "--verbatim"], cwd=ROOT, input=diff.stdout, capture_output=True)
+    fields = r.stdout.decode("ascii", errors="replace").split()
+    return fields[0] if fields else ""
 
 
 def is_passed(base: str, head: str) -> bool:
