@@ -31,14 +31,24 @@ LIMIT_PATTERN = re.compile(
 )
 
 
+# claude 오류 결과의 구조화된 한도 필드(api_error_status·api_error). 문구보다 먼저 본다.
+LIMIT_STATUS_CODES = (429, 529)
+LIMIT_API_ERRORS = ("usage_limit_reached", "rate_limit", "overloaded")
+
+
 def is_usage_limited(output: dict) -> bool:
     """worker가 사용량 한도로 멈췄는지. 성공한 응답 본문에 같은 단어가 있는 것은 무시한다."""
     text = output.get("stdout") or ""
     try:
-        failed = output["exitCode"] != 0 or bool(json.loads(text).get("is_error"))
-    except (ValueError, AttributeError):
-        failed = output["exitCode"] != 0
-    return failed and bool(LIMIT_PATTERN.search(text + (output.get("stderr") or "")))
+        data = json.loads(text)
+        data = data if isinstance(data, dict) else {}
+    except ValueError:
+        data = {}
+    if output["exitCode"] == 0 and not data.get("is_error"):
+        return False
+    if data.get("api_error_status") in LIMIT_STATUS_CODES or data.get("api_error") in LIMIT_API_ERRORS:
+        return True
+    return bool(LIMIT_PATTERN.search(text + (output.get("stderr") or "")))
 
 
 def _today() -> date:
@@ -89,6 +99,7 @@ class StepExecutor:
     LIMIT_WAIT_FIRST_SEC = 300
     LIMIT_WAIT_MAX_SEC = 1800
     LIMIT_WAIT_TOTAL_DEFAULT_SEC = 21600
+    SETTLED_STATUSES = ("completed", "blocked", "error")
     AC_OUTPUT_TAIL_CHARS = 2000
     TZ = timezone(timedelta(hours=9))
 
@@ -303,12 +314,25 @@ class StepExecutor:
         return output
 
     def _invoke_until_unlimited(self, step: dict, preamble: str) -> dict:
-        """사용량 한도에 걸리면 기다렸다가 같은 시도를 다시 한다. 재시도 횟수는 쓰지 않는다."""
+        """사용량 한도에 걸리면 기다렸다가 같은 시도를 다시 한다. 재시도 횟수는 쓰지 않는다.
+        worker가 step을 마무리(completed·blocked·error)한 뒤 한도로 끝났으면 다시 돌리지 않는다."""
+        return self._wait_out_limit(lambda: self._invoke_claude(step, preamble),
+                                    lambda: self._step_status(step["step"]) in self.SETTLED_STATUSES)
+
+    def _step_status(self, step_num: int) -> str:
+        steps = self._read_json(self._index_file)["steps"]
+        return next(s.get("status", "pending") for s in steps if s["step"] == step_num)
+
+    @staticmethod
+    def _output(result: subprocess.CompletedProcess) -> dict:
+        return {"exitCode": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
+
+    def _wait_out_limit(self, run, is_settled=lambda: False) -> dict:
         total = self._config["timeouts_sec"].get("limit_wait", self.LIMIT_WAIT_TOTAL_DEFAULT_SEC)
         delay, waited = self.LIMIT_WAIT_FIRST_SEC, 0
         while True:
-            output = self._invoke_claude(step, preamble)
-            if not is_usage_limited(output) or waited >= total:
+            output = run()
+            if not is_usage_limited(output) or waited >= total or is_settled():
                 return output
             pause = min(delay, total - waited)
             print(f"  ⏳ 사용량 한도 — {pause // 60}분 기다린 뒤 같은 시도를 다시 합니다 (누적 {waited // 60}분)")
@@ -470,7 +494,7 @@ class StepExecutor:
                 output = self._invoke_until_unlimited(step, preamble)
                 elapsed = int(pi.elapsed)
 
-            if is_usage_limited(output):
+            if is_usage_limited(output) and self._step_status(step_num) not in self.SETTLED_STATUSES:
                 self._set_step(step_num, status="blocked",
                                blocked_reason="사용량 한도가 limit_wait 안에 풀리지 않음. 풀린 뒤 pending으로 바꿔 다시 실행")
             status, err_msg = self._judge_attempt(step, base)
@@ -552,8 +576,9 @@ class StepExecutor:
         return result
 
     def _fix_review_findings(self, result: dict):
+        prompt = review.build_fix_prompt(result, self._project)
         with progress_indicator("리뷰 지적 수정"):
-            self._run_claude(review.build_fix_prompt(result, self._project))
+            self._wait_out_limit(lambda: self._output(self._run_claude(prompt)))
         self._run_git("add", "-A")
         if self._run_git("diff", "--cached", "--quiet").returncode != 0:
             self._run_git("commit", "-m", self.FIX_MSG.format(phase=self._phase_name))

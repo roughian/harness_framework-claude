@@ -617,7 +617,7 @@ def git_log(executor):
 
 class TestReviewPhase:
     def test_clean_review_records_and_skips_fix(self, executor, git_log):
-        executor._run_claude = MagicMock()
+        executor._run_claude = MagicMock(return_value=subprocess.CompletedProcess("claude", 0, "{}", ""))
         with patch.object(ex.review, "run_review", return_value=_merged()):
             result = executor._review_phase()
         assert result["blocking"] == 0
@@ -626,7 +626,7 @@ class TestReviewPhase:
         assert index["review"] == {"risk_score": 10, "risk_level": "low", "blocking": 0, "rounds": 0}
 
     def test_blocking_fixed_then_rereviewed(self, executor, git_log):
-        executor._run_claude = MagicMock()
+        executor._run_claude = MagicMock(return_value=subprocess.CompletedProcess("claude", 0, "{}", ""))
         with patch.object(ex.review, "run_review", side_effect=[_merged(blocking=1), _merged()]):
             executor._review_phase()
         prompt = executor._run_claude.call_args[0][0]
@@ -636,7 +636,7 @@ class TestReviewPhase:
         assert json.loads(executor._index_file.read_text())["review"]["rounds"] == 1
 
     def test_still_blocking_blocks_phase(self, executor, git_log, tmp_project):
-        executor._run_claude = MagicMock()
+        executor._run_claude = MagicMock(return_value=subprocess.CompletedProcess("claude", 0, "{}", ""))
         with patch.object(ex.review, "run_review", return_value=_merged(blocking=2)):
             with pytest.raises(SystemExit) as exc_info:
                 executor._review_phase()
@@ -719,7 +719,7 @@ class TestReviewBaseAndWorkDir:
 
 class TestVerifyReview:
     def test_rereview_after_fix_is_verify_mode(self, executor, git_log):
-        executor._run_claude = MagicMock()
+        executor._run_claude = MagicMock(return_value=subprocess.CompletedProcess("claude", 0, "{}", ""))
         first = _merged(blocking=1)
         with patch.object(ex.review, "run_review", side_effect=[first, _merged()]) as mock_review:
             executor._review_phase()
@@ -735,7 +735,7 @@ class TestVerifyReview:
         assert mock_review.call_args.kwargs["previous"] == previous
 
     def test_stops_after_max_rounds(self, executor, git_log):
-        executor._run_claude = MagicMock()
+        executor._run_claude = MagicMock(return_value=subprocess.CompletedProcess("claude", 0, "{}", ""))
         with patch.object(ex.review, "run_review", return_value=_merged(blocking=1)) as mock_review:
             with pytest.raises(SystemExit):
                 executor._review_phase()
@@ -803,6 +803,10 @@ class TestUsageLimit:
         (_out(1, stderr="You've hit your org's monthly spend limit"), True),
         (_out(1, stderr="You're out of usage credits · resets 3pm"), True),
         (_out(1, stderr="You're out of extra usage"), True),
+        # 결과 JSON의 구조화된 한도 필드(다른 프로젝트에서 실제로 관측: api_error_status 429, api_error usage_limit_reached).
+        (_out(1, json.dumps({"is_error": True, "api_error_status": 529, "result": "API Error"})), True),
+        (_out(1, json.dumps({"is_error": True, "api_error": "usage_limit_reached", "result": "API Error"})), True),
+        (_out(1, json.dumps({"is_error": True, "api_error_status": 401, "result": "Invalid API key"})), False),
         # 성공한 응답 본문에 '한도' 단어가 있어도 한도가 아니다(예: rate limit 미들웨어를 구현함).
         (_out(0, json.dumps({"is_error": False, "result": "implemented rate limit middleware"})), False),
         (_out(-1, stderr="timeout after 3600s"), False),
@@ -826,6 +830,22 @@ class TestUsageLimit:
     def test_gives_up_when_total_wait_reaches_limit_wait(self, executor):
         result, calls, sleeps = self._run(executor, [LIMITED] * 5, limit_wait=900)
         assert result is LIMITED and calls == 3 and sleeps == [300, 600]
+
+    @pytest.mark.parametrize("status", ["completed", "blocked", "error"])
+    def test_step_settled_before_limit_is_not_rerun(self, executor, phase_dir, status):
+        # worker가 step을 마무리(status 기록)한 뒤 한도로 끝났으면 같은 step을 다시 돌리지 않는다.
+        _set_status(phase_dir, status=status)
+        result, calls, sleeps = self._run(executor, [LIMITED, _out(0, "{}")])
+        assert result is LIMITED and calls == 1 and sleeps == []
+
+    def test_review_fix_session_waits_out_limit(self, executor):
+        limited = subprocess.CompletedProcess("claude", 1, "", "Claude AI usage limit reached|1760000000")
+        ok = subprocess.CompletedProcess("claude", 0, "{}", "")
+        executor._run_git = MagicMock(return_value=subprocess.CompletedProcess("git", 0, "", ""))
+        with patch.object(executor, "_run_claude", side_effect=[limited, ok]) as run, \
+             patch.object(ex.time, "sleep") as sleep, patch.object(ex.review, "build_fix_prompt", return_value="fix"):
+            executor._fix_review_findings({})
+        assert run.call_count == 2 and sleep.call_args_list[0].args[0] == 300
 
 
 # ---------------------------------------------------------------------------
