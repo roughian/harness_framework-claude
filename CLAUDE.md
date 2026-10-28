@@ -13,11 +13,13 @@
 ## 개발 프로세스
 - 새 기능은 테스트부터 작성하고, 그 테스트를 통과하는 구현을 쓴다. 이유: tdd-guard 훅이 테스트 없는 구현 파일 편집을 막고, 리뷰는 테스트 누락을 P1으로 본다.
 - 커밋 메시지는 conventional commits 형식을 따를 것 (feat:, fix:, docs:, refactor:)
+- 다른 프로그램의 기능을 참고하거나 가져오려면 PRD·plan을 쓰기 전에 `feature-import` 스킬을 따른다(rea 분석 → `docs/research/`). 이유: 짐작으로 만든 기능은 AC를 통과해도 원본과 다르게 동작한다.
+- research 대상의 코드·문자열은 복사하지 않고 행동만 다시 구현한다. 이유: 라이선스 위반이고, 남의 구조는 ARCHITECTURE와 맞지 않는다.
 - 코드를 쓴 에이전트는 자기 코드를 승인하지 않는다. 리뷰는 `python3 scripts/review.py`가 맡는다(작은 변경은 리뷰어 1명, 크거나 민감하면 Claude+Codex 교차).
 
 ## 문서 지도
 - 항상 로드(아래 import): ARCHITECTURE(구조·공유 컨벤션)
-- 설계할 때만: `docs/LESSONS.md`(실수→규칙. 키가 맞는 줄은 worker·리뷰어에게 자동 전달), `docs/PRD.md`(무엇을·왜), `docs/PROGRESS.md`(이미 끝난 작업 — 다시 만들지 말 것), `docs/ADR.md`(기술 결정 로그 — 스택·라이브러리를 정하거나 바꿀 때)
+- 설계할 때만: `docs/LESSONS.md`(실수→규칙. 키가 맞는 줄은 worker·리뷰어에게 자동 전달), `docs/PRD.md`(무엇을·왜), `docs/research/`(다른 프로그램에서 가져올 기능의 행동 명세), `docs/PROGRESS.md`(이미 끝난 작업 — 다시 만들지 말 것), `docs/ADR.md`(기술 결정 로그 — 스택·라이브러리를 정하거나 바꿀 때)
 - UI step에서만: `docs/UI_GUIDE.md`
 - 리뷰어만: `REVIEW.md` / 모델 선택 기록·병렬 설정: `harness.config.json`(오케스트레이터가 artificialanalysis.ai를 보고 갱신, `/harness` F절)
 
