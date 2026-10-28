@@ -25,6 +25,8 @@ DEFAULT_MAX_WORKTREES = 3
 def ready_phases(index: dict, running: set, limit: int) -> tuple:
     """(지금 띄울 phase 목록, 기다리는 이유 목록). limit은 동시 실행 상한(실행 중 포함)."""
     status = {p["dir"]: p.get("status") for p in index.get("phases", [])}
+    # merge가 끝난 phase의 worktree는 남아 있어도 돌고 있지 않다.
+    running = {name for name in running if status.get(name) != "completed"}
     ready, waiting = [], []
     for phase in index.get("phases", []):
         name = phase["dir"]
@@ -47,19 +49,33 @@ def running_phases(root: Path) -> set:
     return {b.removeprefix("feat-") for b in branches if b.startswith("feat-")}
 
 
+def _pin_review_base(index_file: Path, start: str) -> None:
+    """리뷰 base를 시작 커밋으로 고정한다. execute.py는 feat 브랜치가 이미 checkout돼 있으면 index의
+    base_branch를 쓰고, 없으면 "main"을 쓴다. 다른 phase가 먼저 merge되면 main이 움직여 그 변경이 이 phase의 삭제로 보인다."""
+    if not index_file.exists():
+        return
+    index = json.loads(index_file.read_text(encoding="utf-8"))
+    index.setdefault("base_branch", start)
+    index_file.write_text(json.dumps(index, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
 def launch(phase: dict, root: Path) -> None:
     name = phase["dir"]
     wt = root.parent / f"wt-{name}"
-    r = subprocess.run(["git", "worktree", "add", str(wt), "-b", f"feat-{name}"], cwd=root, capture_output=True, text=True)
+    start = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+    r = subprocess.run(["git", "worktree", "add", str(wt), "-b", f"feat-{name}", start],
+                       cwd=root, capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(f"{name} worktree 생성 실패: {r.stderr.strip()}")
+    _pin_review_base(wt / "phases" / name / "index.json", start)
     if os.environ.get("HERDR_PANE_ID"):
         pane = herdr_layout.split_pane(wt, label=f"phase:{name}")
         subprocess.run(["herdr", "pane", "run", pane, f"python3 scripts/execute.py {name}"], check=True)
         return
     log = wt / "phases" / name / "run.log"
     log.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.Popen(["python3", "scripts/execute.py", name], cwd=wt, stdout=log.open("w"), stderr=subprocess.STDOUT)
+    subprocess.Popen(["python3", "scripts/execute.py", name], cwd=wt, stdout=log.open("w"), stderr=subprocess.STDOUT,
+                     env={**os.environ, "PYTHONUNBUFFERED": "1"})
     print(f"  {name}: 백그라운드 실행, 로그 {log}")
 
 

@@ -1,5 +1,6 @@
 """run_phases.py 테스트 — 지금 시작할 수 있는 독립 phase를 상한까지 worktree로 함께 띄운다."""
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -51,6 +52,12 @@ class TestReadyPhases:
         assert "c: 동시 실행 상한 2개 도달" in waiting
 
 
+    def test_merged_phase_worktree_does_not_hold_a_slot(self):
+        index = _index(_phase("a", "completed"), _phase("b"), _phase("c"), _phase("d", depends_on=["a"]))
+        ready, _ = rp.ready_phases(index, running={"a", "b", "c"}, limit=3)
+        assert [p["dir"] for p in ready] == ["d"]
+
+
 class TestRunningPhases:
     def test_reads_feat_branches_from_worktrees(self):
         out = ("worktree /repo\nHEAD 1\nbranch refs/heads/main\n\n"
@@ -64,14 +71,25 @@ class TestRunningPhases:
 class TestLaunch:
     def test_inside_herdr_runs_in_work_pane(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERDR_PANE_ID", "p1")
-        run = MagicMock(return_value=subprocess.CompletedProcess([], 0, "", ""))
+        run = MagicMock(return_value=subprocess.CompletedProcess([], 0, "sha1\n", ""))
         with patch.object(rp.subprocess, "run", run), \
              patch.object(rp.herdr_layout, "split_pane", return_value="p9") as split:
             rp.launch(_phase("a"), tmp_path / "repo")
         wt = tmp_path / "wt-a"
-        assert run.call_args_list[0].args[0] == ["git", "worktree", "add", str(wt), "-b", "feat-a"]
+        assert run.call_args_list[1].args[0] == ["git", "worktree", "add", str(wt), "-b", "feat-a", "sha1"]
         split.assert_called_once_with(wt, label="phase:a")
-        assert run.call_args_list[1].args[0] == ["herdr", "pane", "run", "p9", "python3 scripts/execute.py a"]
+        assert run.call_args_list[2].args[0] == ["herdr", "pane", "run", "p9", "python3 scripts/execute.py a"]
+
+    def test_review_base_is_pinned_to_start_commit(self, tmp_path, monkeypatch):
+        # 다른 phase가 먼저 main에 merge돼도 이 phase 리뷰는 시작 커밋 기준 diff만 본다.
+        monkeypatch.delenv("HERDR_PANE_ID", raising=False)
+        index_file = tmp_path / "wt-a" / "phases" / "a" / "index.json"
+        index_file.parent.mkdir(parents=True)
+        index_file.write_text(json.dumps({"phase": "a", "steps": []}))
+        run = MagicMock(return_value=subprocess.CompletedProcess([], 0, "sha1\n", ""))
+        with patch.object(rp.subprocess, "run", run), patch.object(rp.subprocess, "Popen"):
+            rp.launch(_phase("a"), tmp_path / "repo")
+        assert json.loads(index_file.read_text())["base_branch"] == "sha1"
 
     def test_outside_herdr_runs_in_background_with_log(self, tmp_path, monkeypatch):
         monkeypatch.delenv("HERDR_PANE_ID", raising=False)
@@ -82,11 +100,13 @@ class TestLaunch:
         assert popen.call_args.args[0] == ["python3", "scripts/execute.py", "a"]
         assert popen.call_args.kwargs["cwd"] == wt
         assert Path(popen.call_args.kwargs["stdout"].name) == wt / "phases" / "a" / "run.log"
+        assert popen.call_args.kwargs["env"]["PYTHONUNBUFFERED"] == "1"
 
     def test_worktree_failure_stops_launch(self, tmp_path, monkeypatch):
         monkeypatch.delenv("HERDR_PANE_ID", raising=False)
-        failed = subprocess.CompletedProcess([], 128, "", "already exists")
-        with patch.object(rp.subprocess, "run", return_value=failed), \
+        results = [subprocess.CompletedProcess([], 0, "sha1\n", ""),
+                   subprocess.CompletedProcess([], 128, "", "already exists")]
+        with patch.object(rp.subprocess, "run", side_effect=results), \
              patch.object(rp.subprocess, "Popen") as popen:
             with pytest.raises(RuntimeError, match="already exists"):
                 rp.launch(_phase("a"), tmp_path / "repo")
