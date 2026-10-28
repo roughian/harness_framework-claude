@@ -35,6 +35,7 @@ ARCHITECTURE는 CLAUDE.md import로 이미 로드되어 있다. 추가로 읽을
 7. **네이밍** — step name은 kebab-case slug로, 해당 step의 핵심 모듈/작업을 한두 단어로 표현한다 (예: `project-setup`, `api-layer`, `auth-flow`).
 8. **LESSONS 반영** — step 파일에 만들거나 고칠 경로를 적으면, 키가 맞는 LESSONS 줄이 worker 프롬프트에 자동으로 붙는다. 키로 잡히지 않는 판단 규칙만 금지사항에 옮겨 적는다.
 9. **고정 AC** — 결과를 검증할 수 있는 step은 오케스트레이터가 인수 테스트를 먼저 쓰고 커밋한 뒤, step의 `ac`(커맨드)와 `ac_files`(그 테스트 파일)에 적는다(D-2). worker는 이 파일을 고칠 수 없다. execute.py가 worker가 끝난 뒤 `ac`를 직접 돌리고, `ac_files`가 바뀌었으면 되돌리고 실패로 처리한다. PRD의 수치 성공 기준은 이 테스트로 옮긴다. 이유: worker가 자기 테스트를 직접 써서 통과시키면 자기평가가 된다. research 문서가 있으면 `## 관찰된 예시`를 이 인수 테스트로 옮기고, step `## 읽어야 할 파일`에 그 문서를 넣는다.
+10. **독립 작업은 phase로 나눈다** — 건드리는 파일이 겹치지 않고 서로의 산출물이 필요 없는 작업 묶음은 각각 별도 phase로 만든다. 다른 phase의 결과가 필요한 phase에는 `depends_on`을 적는다. 초안을 보여 줄 때 어떤 phase가 동시에 도는지 함께 보여 준다. 이유: phase 안의 step은 직렬이라, 한 phase에 몰아 넣으면 병렬로 돌 수 없다.
 
 ### D. 파일 생성
 
@@ -57,6 +58,7 @@ ARCHITECTURE는 CLAUDE.md import로 이미 로드되어 있다. 추가로 읽을
 
 - `dir`: task 디렉토리명.
 - `status`: `"pending"` | `"completed"` | `"error"` | `"blocked"`. execute.py가 실행 중 자동으로 업데이트한다.
+- `depends_on`(선택): 먼저 끝나야 하는 phase `dir` 목록. 그 phase가 main에서 completed(merge됨)가 되어야 `run_phases.py`가 시작한다. 없으면 독립 phase다.
 - 타임스탬프(`completed_at`, `failed_at`, `blocked_at`)는 execute.py가 상태 변경 시 자동 기록한다. 생성 시 넣지 않는다.
 
 #### D-2. `phases/{task-name}/index.json` (task 상세)
@@ -152,6 +154,8 @@ python3 scripts/execute.py {task-name} --push        # 실행 후 push (risk hig
 python3 scripts/execute.py {task-name} --no-review   # 리뷰 게이트 생략
 ```
 
+phase가 여러 개면 `python3 scripts/run_phases.py`로 시작할 수 있는 것을 함께 띄운다(F절 6번).
+
 execute.py가 자동으로 처리하는 것:
 
 - `feat-{task-name}` 브랜치 생성/checkout. 실행 직전 브랜치를 리뷰 base로 기억한다.
@@ -225,15 +229,14 @@ herdr 화면 배치 (herdr 안일 때):
    - 작은 모델(`haiku`)은 결과를 쉽게 확인할 수 있는 조회·검색에만 쓴다. 작은 모델이 잘못 읽어 메인 세션이 엉뚱한 파일을 헤매면, 그 작업 유형은 한 등급 올린다.
    - 등급은 시작점일 뿐이다. 모델 선택 절차에서 더 나은 선택이 나오면 그것을 따른다.
 
-5. **동시 실행 상한**: 독립 phase는 `parallel.max_worktrees`(기본 3)개까지만 동시에 돌린다. 리뷰가 따라가야 하기 때문이다. 세션 안 읽기 전용 에이전트는 이 상한에 포함하지 않는다.
+5. **동시 실행 상한**: 독립 phase는 `parallel.max_worktrees`(기본 3)개까지만 동시에 돌린다(`run_phases.py`가 지킨다). 리뷰가 따라가야 하기 때문이다. 세션 안 읽기 전용 에이전트는 이 상한에 포함하지 않는다.
 6. **독립 phase를 병렬로 돌리는 법**:
    ```bash
    # 1) 시작 전에 docs/ARCHITECTURE.md의 "공유 컨벤션"을 확정하고 커밋한다.
-   # 2) phase마다 worktree를 만들고, 작업 탭에 pane을 열어 실행한다.
-   #    (herdr worktree create는 새 workspace를 열어 리캡에 안 보이므로 쓰지 않는다.)
-   git worktree add ../wt-{task-name} -b feat-{task-name}
-   P=$(python3 scripts/herdr_layout.py split --cwd ../wt-{task-name} --label phase:{task-name})
-   herdr pane run "$P" "python3 scripts/execute.py {task-name}"
+   # 2) 시작할 수 있는 phase(pending, depends_on 완료)를 상한까지 ../wt-<phase> worktree로 띄운다.
+   #    herdr 안이면 작업 탭 pane에서, 밖이면 백그라운드로 돈다(로그: phases/<phase>/run.log).
+   python3 scripts/run_phases.py            # --dry-run: 띄울 것만 출력
+   # 3) 끝난 phase를 리뷰 통과 후 main에 merge하고 다시 실행하면, 그 phase를 기다리던 phase가 시작된다.
    ```
 7. 병렬 작업이 끝나면 결과를 모아 사용자에게 한 번에 보고한다. 진행 중 상태는 리캡 pane이 보여 주므로 따로 중계하지 않는다. 보고는 아래 세 제목 순서로 쓴다. 사람이 먼저 봐야 할 것을 위에 둔다.
    - **내 결정 필요** — 사용자가 답하거나 승인해야 진행되는 것(차단 리뷰, blocked phase, 선택지)

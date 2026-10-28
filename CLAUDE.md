@@ -15,6 +15,7 @@
 - 커밋 메시지는 conventional commits 형식을 따를 것 (feat:, fix:, docs:, refactor:)
 - 다른 프로그램의 기능을 참고하거나 가져오려면 PRD·plan을 쓰기 전에 `feature-import` 스킬을 따른다(rea 분석 → `docs/research/`). 이유: 짐작으로 만든 기능은 AC를 통과해도 원본과 다르게 동작한다.
 - research 대상의 코드·문자열은 복사하지 않고 행동만 다시 구현한다. 이유: 라이선스 위반이고, 남의 구조는 ARCHITECTURE와 맞지 않는다.
+- 서로의 결과가 필요 없는 일(파일 읽기·검색·조사·리뷰, 겹치는 파일이 없는 독립 phase)은 한 번에 함께 띄운다. 도구·Agent 호출은 한 메시지에 여러 개 넣고, phase는 `python3 scripts/run_phases.py`로 띄운다. 이유: 순서대로 하면 기다리는 시간만 늘고 결과는 같다.
 - 코드를 쓴 에이전트는 자기 코드를 승인하지 않는다. 리뷰는 `python3 scripts/review.py`가 맡는다(작은 변경은 리뷰어 1명, 크거나 민감하면 Claude+Codex 교차).
 
 ## 문서 지도
@@ -35,6 +36,7 @@ npm run build    # 프로덕션 빌드
 npm run lint     # ESLint
 npm run test     # 테스트
 python3 scripts/execute.py <phase>   # phase 실행 (+ 교차 리뷰 게이트)
+python3 scripts/run_phases.py        # 시작할 수 있는 독립 phase를 worktree로 함께 실행 (--dry-run)
 python3 scripts/review.py --base main  # 리뷰만 실행
 python3 scripts/pr_review.py --pr <번호>  # PR에 push 리뷰 결과 붙이기(라벨·코멘트·AI Review 체크)
 scripts/install_git_hooks.sh           # git pre-push 리뷰 훅 설치 (클론 후 1회)

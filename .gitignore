@@ -7,6 +7,7 @@ tsconfig.tsbuildinfo
 # phase execution outputs
 phases/**/phase*-output.json
 phases/**/step*-output.json
+phases/**/run.log
 
 # cross review working files
 .review/
